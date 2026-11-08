@@ -1,4 +1,4 @@
-# Gatra
+# Gatra Video
 
 Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan aksen emas dan biru.
 
