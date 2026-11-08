@@ -184,6 +184,7 @@ fun VideoCard(v: VideoItem, onClick: () -> Unit, onChannel: (() -> Unit)? = null
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
+            VideoMenuButton(v)
         }
     }
 }
@@ -212,7 +213,7 @@ fun CompactVideoRow(
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
         }
-        if (trailing != null) trailing()
+        if (trailing != null) trailing() else VideoMenuButton(v)
     }
 }
 

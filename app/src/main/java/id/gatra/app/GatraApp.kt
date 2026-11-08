@@ -11,6 +11,7 @@ import id.gatra.app.data.MIGRATION_2_3
 import id.gatra.app.data.Repo
 import id.gatra.app.player.DownloadCenter
 import id.gatra.app.player.PlaybackController
+import id.gatra.app.player.ShortsController
 import okhttp3.OkHttpClient
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.localization.ContentCountry
@@ -33,6 +34,8 @@ class GatraApp : Application() {
         private set
     lateinit var downloads: DownloadCenter
         private set
+    lateinit var shorts: ShortsController
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -53,5 +56,6 @@ class GatraApp : Application() {
         settings = AppSettings(this)
         downloads = DownloadCenter(this, library, http, settings)
         playback = PlaybackController(this, repo, http, library, settings)
+        shorts = ShortsController(this, repo, http, settings)
     }
 }

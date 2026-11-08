@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -144,6 +147,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+/** Pesan dari tab bawah ke layar Beranda: "tab Beranda ditekan". */
+object HomeEvents {
+    val pending = MutableStateFlow(false)
+    fun request() {
+        pending.value = true
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -162,11 +173,38 @@ fun HomeScreen(
         }
     }
 
+    val listState = rememberLazyListState()
+    val pendingHomeTap by HomeEvents.pending.collectAsStateWithLifecycle()
+
+    // Tab Beranda ditekan: kembali ke "Untukmu", muat ulang, lalu naik ke paling atas.
+    LaunchedEffect(pendingHomeTap) {
+        if (pendingHomeTap) {
+            HomeEvents.pending.value = false
+            if (vm.selected != 0) vm.select(0)
+            vm.refresh()
+            listState.scrollToItem(0)
+        }
+    }
+
+    // Setiap penyegaran (tarik layar maupun tab Beranda) selalu naik ke atas, saat mulai dan saat selesai.
+    var wasRefreshing by remember { mutableStateOf(vm.refreshing) }
+    LaunchedEffect(vm.refreshing) {
+        if (vm.refreshing != wasRefreshing) {
+            wasRefreshing = vm.refreshing
+            listState.scrollToItem(0)
+        }
+    }
+
+    val appCtx = LocalContext.current.applicationContext as GatraApp
+    val hiddenVideos by appCtx.settings.hiddenVideos.collectAsStateWithLifecycle()
+    val hiddenChannels by appCtx.settings.hiddenChannels.collectAsStateWithLifecycle()
+    fun keep(v: VideoItem): Boolean =
+        v.url !in hiddenVideos && (v.channelUrl ?: v.channel) !in hiddenChannels
+
     Column(Modifier.fillMaxSize()) {
         GatraTopBar(
             leading = { Wordmark() },
             actions = {
-                IconButton(onClick = vm::refresh) { Icon(Icons.Default.Refresh, "Muat ulang", tint = G.Text) }
                 IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Cari", tint = G.Text) }
             }
         )
@@ -175,13 +213,13 @@ fun HomeScreen(
             onRefresh = vm::refresh,
             modifier = Modifier.fillMaxSize()
         ) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
                 item { CategoryChips(vm.labels, vm.selected, vm::select) }
 
                 if (vm.selected == 0) {
-                    val feedTop = vm.feed.take(8)
+                    val feedTop = vm.feed.filter { keep(it) }.take(8)
                     val feedUrls = feedTop.map { it.url }.toSet()
-                    val recList = recs.filter { it.url !in feedUrls }
+                    val recList = recs.filter { keep(it) && it.url !in feedUrls }
 
                     if (feedTop.isNotEmpty()) {
                         item { SectionTitle("Terbaru dari langgananmu") }
@@ -211,7 +249,7 @@ fun HomeScreen(
                     when {
                         vm.loading && vm.catItems.isEmpty() -> item { LoadingBox() }
                         vm.error != null && vm.catItems.isEmpty() -> item { ErrorBox(vm.error ?: "", vm::refresh) }
-                        else -> itemsIndexed(vm.catItems) { _, v ->
+                        else -> itemsIndexed(vm.catItems.filter { keep(it) }) { _, v ->
                             VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
                         }
                     }

@@ -31,7 +31,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import id.gatra.app.GatraApp
 import id.gatra.app.data.VideoItem
 import id.gatra.app.data.friendlyError
-import id.gatra.app.player.PlayerState
+import id.gatra.app.player.QualityOption
+import id.gatra.app.player.buildQualityOptions
 import id.gatra.app.ui.theme.G
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +45,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfo
 
 /** Pilih kualitas (atau audio saja) lalu mulai mengunduh. */
 @Composable
-fun DownloadDialog(info: StreamInfo, st: PlayerState, app: GatraApp, onDismiss: () -> Unit) {
+fun DownloadDialog(info: StreamInfo, qualities: List<QualityOption>, app: GatraApp, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -59,7 +60,7 @@ fun DownloadDialog(info: StreamInfo, st: PlayerState, app: GatraApp, onDismiss: 
                 )
                 Spacer(Modifier.height(10.dp))
                 LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                    items(st.qualities.sortedByDescending { it.height }) { q ->
+                    items(qualities.sortedByDescending { it.height }) { q ->
                         Text(
                             q.label,
                             modifier = Modifier
@@ -90,6 +91,42 @@ fun DownloadDialog(info: StreamInfo, st: PlayerState, app: GatraApp, onDismiss: 
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Batal", color = G.Gold) } }
     )
+}
+
+/** Unduh dari daftar video: ambil data video dulu, lalu pilih kualitas. */
+@Composable
+fun DownloadByUrlDialog(video: VideoItem, app: GatraApp, onDismiss: () -> Unit) {
+    var info by remember { mutableStateOf<StreamInfo?>(null) }
+    var options by remember { mutableStateOf<List<QualityOption>>(emptyList()) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(video.url) {
+        try {
+            val i = withContext(Dispatchers.IO) { StreamInfo.getInfo(ServiceList.YouTube, video.url) }
+            options = buildQualityOptions(i, false)
+            info = i
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = friendlyError(e)
+        }
+    }
+
+    val ready = info
+    if (ready != null) {
+        DownloadDialog(ready, options, app, onDismiss)
+    } else {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            containerColor = G.SurfaceHigh,
+            title = { Text("Unduh video") },
+            text = {
+                val err = error
+                if (err == null) CircularProgressIndicator(color = G.Gold) else Text(err, color = G.Muted)
+            },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("Batal", color = G.Gold) } }
+        )
+    }
 }
 
 /** Tambahkan video ke playlist yang ada, atau buat playlist baru. */

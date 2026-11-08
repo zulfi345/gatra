@@ -55,6 +55,7 @@ private const val SUBS = "subs"
 private const val HISTORY = "history"
 private const val SEARCH = "search"
 private const val LIBRARY = "library"
+private const val SHORTS = "shorts"
 private const val WATCH_LATER = "watch_later"
 private const val PLAYLISTS = "playlists"
 private const val PLAYLIST = "playlist/{id}"
@@ -68,7 +69,7 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
     val player by playback.state.collectAsStateWithLifecycle()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
-    val showTabs = route == HOME || route == SUBS || route == HISTORY || route == LIBRARY
+    val showTabs = route == HOME || route == SUBS || route == HISTORY || route == LIBRARY || route == SHORTS
 
     val openVideo: (String) -> Unit = { playback.open(it) }
     val openChannel: (String) -> Unit = { url ->
@@ -93,7 +94,11 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
                                 unselectedIconColor = G.Muted,
                                 unselectedTextColor = G.Muted
                             )
-                            TabItem("Beranda", route == HOME, colors, rememberVectorPainter(Icons.Default.Home)) { goTab(nav, HOME) }
+                            TabItem("Beranda", route == HOME, colors, rememberVectorPainter(Icons.Default.Home)) {
+                                goTab(nav, HOME)
+                                HomeEvents.request()
+                            }
+                            TabItem("Shorts", route == SHORTS, colors, rememberVectorPainter(Icons.Default.PlayArrow)) { goTab(nav, SHORTS) }
                             TabItem("Langganan", route == SUBS, colors, painterResource(R.drawable.ic_subs)) { goTab(nav, SUBS) }
                             TabItem("Riwayat", route == HISTORY, colors, painterResource(R.drawable.ic_history)) { goTab(nav, HISTORY) }
                             TabItem("Koleksi", route == LIBRARY, colors, rememberVectorPainter(Icons.Default.Favorite)) { goTab(nav, LIBRARY) }
@@ -106,6 +111,7 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
                 composable(HOME) {
                     HomeScreen(onVideo = openVideo, onChannel = openChannel, onSearch = { nav.navigate(SEARCH) })
                 }
+                composable(SHORTS) { ShortsScreen(onChannel = openChannel, onOpenVideo = openVideo) }
                 composable(SUBS) { SubsScreen(onVideo = openVideo, onChannel = openChannel) }
                 composable(HISTORY) { HistoryScreen(onVideo = openVideo) }
                 composable(LIBRARY) {

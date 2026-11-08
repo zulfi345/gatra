@@ -33,7 +33,7 @@ private fun speedLabel(s: Float): String =
 @Composable
 fun PlayerMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier) {
     var open by remember { mutableStateOf(false) }
-    var page by remember { mutableIntStateOf(0) } // 0 utama, 1 kualitas, 2 kecepatan, 3 subtitle, 4 tidur
+    var page by remember { mutableIntStateOf(0) } // 0 utama, 1 kualitas, 2 kecepatan, 3 subtitle, 4 tidur, 5 bahasa audio
 
     val label = when {
         st.audioOnly -> "Audio"
@@ -87,6 +87,15 @@ fun PlayerMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier
                         Item(o.label, st.subSelected == i) { open = false; playback.setSubtitle(i) }
                     }
                 }
+                5 -> {
+                    Item("‹ Kembali") { page = 0 }
+                    st.audioTracks.forEach { t ->
+                        Item(t.label, st.audioTrackSel == t.id) {
+                            open = false
+                            playback.setAudioTrack(t.id)
+                        }
+                    }
+                }
                 4 -> {
                     Item("‹ Kembali") { page = 0 }
                     if (st.sleepEndMs > 0) Item("Matikan pengatur waktu") { open = false; playback.setSleepTimer(0) }
@@ -97,6 +106,10 @@ fun PlayerMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier
                 else -> {
                     if (st.qualities.size > 1 && !st.isLive) {
                         Item("Kualitas: $label") { page = 1 }
+                    }
+                    if (st.audioTracks.isNotEmpty()) {
+                        val cur = st.audioTracks.firstOrNull { it.id == st.audioTrackSel }?.label ?: "Asli"
+                        Item("Bahasa audio: $cur") { page = 5 }
                     }
                     Item("Kecepatan: ${speedLabel(st.speed)}") { page = 2 }
                     if (st.subtitles.isNotEmpty()) {
@@ -120,6 +133,7 @@ fun PlayerMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier
                         "aktif, sisa ±$left mnt"
                     } else "mati"
                     Item("Waktu tidur: $sleepLabel") { page = 4 }
+                    if (st.hasPrevious) Item("Putar video sebelumnya") { open = false; playback.playPrevious() }
                     Item("Putar video berikutnya") { open = false; playback.skipNext() }
                 }
             }

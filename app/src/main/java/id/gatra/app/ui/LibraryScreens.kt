@@ -332,6 +332,7 @@ fun DownloadsScreen(onBack: () -> Unit, onVideo: (String) -> Unit) {
 fun SettingsScreen(onBack: () -> Unit) {
     val app = appOf()
     val st = app.settings
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var autoplay by remember { mutableStateOf(st.autoplay) }
     var sponsor by remember { mutableStateOf(st.sponsorBlock) }
@@ -359,6 +360,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                     sponsor
                 ) { sponsor = it; st.sponsorBlock = it }
                 HorizontalDivider(color = G.Outline)
+                LibRow("Tampilkan lagi video yang disembunyikan", "Dari menu “Tidak tertarik” dan “Jangan rekomendasikan channel”") {
+                    st.clearHidden()
+                    android.widget.Toast.makeText(ctx, "Semua video dan channel ditampilkan lagi.", android.widget.Toast.LENGTH_SHORT).show()
+                }
                 LibRow("Hapus cache video", "Terpakai ${mb(cacheBytes)}") {
                     app.playback.clearCache()
                     cacheBytes = app.playback.cacheBytes()

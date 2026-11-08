@@ -20,6 +20,8 @@ Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan a
 - Putar otomatis video berikutnya dan antrean (tombol + di video terkait).
 - Koleksi: Tonton nanti, Playlist, Unduhan (tonton tanpa internet), dan Pengaturan.
 - Komentar video.
+- Tab Shorts: video vertikal pendek, digeser atas-bawah (daftar disusun dari pencarian karena YouTube tidak menyediakan daftar Shorts resmi).
+- Titik tiga di setiap video, tombol video sebelumnya/berikutnya, dan pilihan bahasa audio (dubbing) bila tersedia.
 - SponsorBlock (opsional, mati secara bawaan): melewati bagian sponsor lewat sponsor.ajay.app.
 - Buka tautan YouTube: tombol Bagikan dari aplikasi lain, atau ketuk tautan youtube.com / youtu.be.
 

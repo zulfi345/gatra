@@ -2,6 +2,9 @@ package id.gatra.app.data
 
 import android.content.Context
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import org.schabi.newpipe.extractor.stream.StreamInfo
 
@@ -23,6 +26,33 @@ class AppSettings(context: Context) {
     var dataSaver: Boolean
         get() = prefs.getBoolean("data_saver", false)
         set(v) = prefs.edit().putBoolean("data_saver", v).apply()
+
+    private val _hiddenVideos = MutableStateFlow<Set<String>>(HashSet(prefs.getStringSet("hidden_videos", emptySet()) ?: emptySet()))
+    private val _hiddenChannels = MutableStateFlow<Set<String>>(HashSet(prefs.getStringSet("hidden_channels", emptySet()) ?: emptySet()))
+
+    /** Video yang dipilih "Tidak tertarik" (disembunyikan dari rekomendasi di Beranda). */
+    val hiddenVideos: StateFlow<Set<String>> = _hiddenVideos.asStateFlow()
+
+    /** Channel yang dipilih "Jangan rekomendasikan channel" (alamat channel, atau namanya bila alamat tak ada). */
+    val hiddenChannels: StateFlow<Set<String>> = _hiddenChannels.asStateFlow()
+
+    fun hideVideo(url: String) {
+        val n = _hiddenVideos.value + url
+        prefs.edit().putStringSet("hidden_videos", HashSet(n)).apply()
+        _hiddenVideos.value = n
+    }
+
+    fun hideChannel(key: String) {
+        val n = _hiddenChannels.value + key
+        prefs.edit().putStringSet("hidden_channels", HashSet(n)).apply()
+        _hiddenChannels.value = n
+    }
+
+    fun clearHidden() {
+        prefs.edit().remove("hidden_videos").remove("hidden_channels").apply()
+        _hiddenVideos.value = emptySet()
+        _hiddenChannels.value = emptySet()
+    }
 
     /** Unduhan hanya boleh berjalan lewat Wi-Fi / jaringan tak berbayar. */
     var wifiOnlyDownload: Boolean

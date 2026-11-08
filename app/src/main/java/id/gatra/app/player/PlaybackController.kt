@@ -69,6 +69,9 @@ class QualityOption(
     val muxed: Boolean
 )
 
+/** Satu pilihan bahasa audio (trek asli atau dubbing YouTube). */
+class AudioTrackOption(val id: String, val label: String, val original: Boolean)
+
 /** Satu pilihan teks (subtitle). */
 class SubOption(
     val lang: String,
@@ -100,19 +103,28 @@ data class PlayerState(
     val queue: List<VideoItem> = emptyList(),
     val sleepEndMs: Long = 0L,
     val notice: String? = null,
-    val offlineTitle: String? = null
+    val offlineTitle: String? = null,
+    val hasPrevious: Boolean = false,
+    val audioTracks: List<AudioTrackOption> = emptyList(),
+    val audioTrackSel: String? = null
 )
 
 // ---------- Fungsi bantu tingkat atas (dipakai juga oleh pengunduh) ----------
 
-internal fun pickAudio(info: StreamInfo): AudioStream? {
+internal fun pickAudio(info: StreamInfo, trackId: String? = null): AudioStream? {
     val all = info.audioStreams.filter {
         it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
     }
     if (all.isEmpty()) return null
-    // Utamakan trek asli (bukan hasil dubbing) bila extractor mengetahuinya.
+    // Bila pengguna memilih bahasa audio (dubbing), pakai trek itu.
+    val forTrack = if (trackId != null) all.filter { callString(it, "getAudioTrackId") == trackId } else emptyList()
+    // Selain itu utamakan trek asli (bukan hasil dubbing) bila extractor mengetahuinya.
     val originals = all.filter { it.audioTrackType == null || it.audioTrackType == AudioTrackType.ORIGINAL }
-    val pool = if (originals.isNotEmpty()) originals else all
+    val pool = when {
+        forTrack.isNotEmpty() -> forTrack
+        originals.isNotEmpty() -> originals
+        else -> all
+    }
     return pool.sortedWith(
         compareBy<AudioStream> { if (it.format == MediaFormat.M4A) 0 else 1 }
             .thenByDescending { it.averageBitrate }
@@ -140,6 +152,35 @@ private fun langTagOf(sub: Any): String {
     } catch (e: Exception) {
         ""
     }
+}
+
+internal fun audioTrackIdOf(a: AudioStream?): String? =
+    if (a == null) null else callString(a, "getAudioTrackId").ifBlank { null }
+
+/** Daftar bahasa audio (asli + dubbing). Kosong bila video hanya punya satu trek. */
+internal fun buildAudioTracks(info: StreamInfo): List<AudioTrackOption> {
+    val all = info.audioStreams.filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
+    val groups = all.groupBy { callString(it, "getAudioTrackId") }.filterKeys { it.isNotBlank() }
+    if (groups.size < 2) return emptyList()
+    return groups.map { (id, list) ->
+        val s = list.first()
+        val loc = try {
+            (s.javaClass.getMethod("getAudioLocale").invoke(s) as? java.util.Locale)
+                ?.getDisplayLanguage(java.util.Locale("id")).orEmpty()
+        } catch (e: Exception) {
+            ""
+        }
+        val name = callString(s, "getAudioTrackName").ifBlank { loc }.ifBlank { id }
+        val typeName = s.audioTrackType?.name
+        val tag = when (typeName) {
+            null -> ""
+            "ORIGINAL" -> "asli"
+            "DUBBED" -> "dubbing"
+            "DESCRIPTIVE" -> "deskriptif"
+            else -> "alternatif"
+        }
+        AudioTrackOption(id, if (tag.isEmpty()) name else "$name ($tag)", typeName == "ORIGINAL")
+    }.sortedBy { if (it.original) 0 else 1 }
 }
 
 private fun qualityLabel(height: Int, fps: Int): String = if (fps > 30) "${height}p$fps" else "${height}p"
@@ -220,6 +261,8 @@ class PlaybackController(
     private var currentBitrate = 0.0
     private var hasStarted = false
     private var subOptions: List<SubOption> = emptyList()
+    private var audioTrackId: String? = null
+    private val history = ArrayList<String>()
     private var segments: List<DoubleArray> = emptyList()
 
     /** Pengukur kecepatan internet (dipakai juga oleh ExoPlayer, jadi perkiraannya makin akurat selama memutar). */
@@ -311,8 +354,39 @@ class PlaybackController(
             _state.update { it.copy(expanded = true) }
             return
         }
+        if (cur.active && cur.url.isNotBlank() && cur.url != url) {
+            history.add(cur.url)
+            if (history.size > 30) history.removeAt(0)
+        }
         startService()
         load(url, 0L)
+    }
+
+    /** Kembali ke video yang ditonton sebelumnya. */
+    fun playPrevious() {
+        if (history.isEmpty()) return
+        val prev = history.removeAt(history.size - 1)
+        startService()
+        load(prev, 0L)
+    }
+
+    /** Putar [v] sebagai video berikutnya (bila belum ada yang diputar, langsung diputar). */
+    fun playNext(v: VideoItem) {
+        if (!_state.value.active) {
+            open(v.url)
+            return
+        }
+        _state.update { it.copy(queue = listOf(v) + it.queue) }
+        notice("Akan diputar berikutnya")
+    }
+
+    /** Taruh [v] di akhir antrean (bila belum ada yang diputar, langsung diputar). */
+    fun enqueueLast(v: VideoItem) {
+        if (!_state.value.active) {
+            open(v.url)
+            return
+        }
+        enqueue(v)
     }
 
     /** Putar daftar: video pertama langsung, sisanya masuk antrean. */
@@ -388,6 +462,17 @@ class PlaybackController(
     fun setAudioOnly(on: Boolean) {
         audioOnly = on
         _state.update { it.copy(audioOnly = on) }
+        reprepare()
+    }
+
+    /** Pilih bahasa audio (asli atau dubbing YouTube). */
+    fun setAudioTrack(id: String) {
+        audioTrackId = id
+        _state.update { it.copy(audioTrackSel = id) }
+        reprepare()
+    }
+
+    private fun reprepare() {
         val s = _state.value
         val info = s.info ?: return
         if (s.isLive || s.qualities.isEmpty()) return
@@ -453,6 +538,8 @@ class PlaybackController(
         sleepJob?.cancel()
         segments = emptyList()
         audioOnly = false
+        audioTrackId = null
+        history.clear()
         player.stop()
         player.clearMediaItems()
         _state.value = PlayerState()
@@ -509,7 +596,7 @@ class PlaybackController(
         val s = _state.value
         val info = s.info ?: return
         val next = info.relatedItems.filterIsInstance<StreamInfoItem>()
-            .firstOrNull { it.url != s.url && it.streamType != StreamType.LIVE_STREAM } ?: return
+            .firstOrNull { it.url != s.url && it.url !in history && it.streamType != StreamType.LIVE_STREAM } ?: return
         open(next.url)
     }
 
@@ -533,10 +620,12 @@ class PlaybackController(
         applySubtitle(null)
         segments = emptyList()
         subOptions = emptyList()
+        audioTrackId = null
         val prev = _state.value
         _state.value = PlayerState(
             active = true, loading = true, url = url, expanded = true, smooth = smooth,
-            queue = prev.queue, sleepEndMs = prev.sleepEndMs, audioOnly = audioOnly
+            queue = prev.queue, sleepEndMs = prev.sleepEndMs, audioOnly = audioOnly,
+            hasPrevious = history.isNotEmpty()
         )
         job = scope.launch {
             // Video yang sudah diunduh diputar langsung dari HP (tanpa internet, tanpa kuota).
@@ -562,6 +651,7 @@ class PlaybackController(
                 val auto = pref == AUTO && !live
                 val chosen = if (auto) pickAuto(options) else pickQuality(options, pref)
                 subOptions = if (live) emptyList() else buildSubs(info)
+                val tracks = if (live) emptyList() else buildAudioTracks(info)
                 prepare(info, chosen, startMs)
                 _state.update {
                     it.copy(
@@ -574,7 +664,9 @@ class PlaybackController(
                         isLive = live,
                         auto = auto,
                         smooth = smooth && !live,
-                        subtitles = subOptions
+                        subtitles = subOptions,
+                        audioTracks = tracks,
+                        audioTrackSel = if (tracks.isEmpty()) null else audioTrackIdOf(pickAudio(info))
                     )
                 }
                 loadSegments(info)
@@ -647,7 +739,7 @@ class PlaybackController(
             .apply { info.thumbnails.bestUrl()?.let { setArtworkUri(Uri.parse(it)) } }
             .build()
 
-        val audioStream = pickAudio(info)
+        val audioStream = pickAudio(info, audioTrackId)
         val audioBranch = audioOnly && option != null && audioStream != null
 
         val base: MediaSource = when {
@@ -730,7 +822,8 @@ class PlaybackController(
         val id = uri.getQueryParameter("id")
         val itag = uri.getQueryParameter("itag")
         val clen = uri.getQueryParameter("clen")
-        return if (id != null && itag != null) "yt_${id}_${itag}_${clen.orEmpty()}" else uri.toString()
+        val xtags = uri.getQueryParameter("xtags")
+        return if (id != null && itag != null) "yt_${id}_${itag}_${clen.orEmpty()}_${xtags.orEmpty()}" else uri.toString()
     }
 
     // ---------- Subtitle ----------

@@ -291,13 +291,14 @@ private fun PlayerDetails(
         return
     }
     val scope = rememberCoroutineScope()
-    val app = LocalContext.current.applicationContext as GatraApp
+    val ctx = LocalContext.current
+    val app = ctx.applicationContext as GatraApp
     val current = remember(info) { info.toVideoItem() }
     val later by remember(info.url) { app.library.isWatchLater(info.url ?: "") }.collectAsStateWithLifecycle(false)
     var showDl by remember { mutableStateOf(false) }
     var showPl by remember { mutableStateOf(false) }
     var showComments by remember { mutableStateOf(false) }
-    if (showDl) DownloadDialog(info, st, app) { showDl = false }
+    if (showDl) DownloadDialog(info, st.qualities, app) { showDl = false }
     if (showPl) PlaylistDialog(current, app) { showPl = false }
     if (showComments) CommentsDialog(info.url ?: "") { showComments = false }
     val uploaderUrl = info.uploaderUrl.orEmpty()
@@ -369,6 +370,8 @@ private fun PlayerDetails(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
                 ) {
+                    if (st.hasPrevious) ActionChip("‹ Sebelumnya") { playback.playPrevious() }
+                    ActionChip("Berikutnya ›") { playback.skipNext() }
                     ActionChip("Unduh") { showDl = true }
                     ActionChip(if (later) "Tersimpan ✓" else "Tonton nanti", active = later) {
                         scope.launch {
@@ -382,6 +385,7 @@ private fun PlayerDetails(
                     }
                     ActionChip("Playlist") { showPl = true }
                     ActionChip("Komentar") { showComments = true }
+                    ActionChip("Bagikan") { shareVideo(ctx, current) }
                 }
 
                 if (description.isNotEmpty()) {
@@ -418,15 +422,8 @@ private fun PlayerDetails(
         if (related.isNotEmpty()) {
             item { SectionTitle("Video terkait") }
             items(related) { v ->
-                CompactVideoRow(
-                    v,
-                    onClick = { playback.open(v.url) },
-                    trailing = {
-                        IconButton(onClick = { playback.enqueue(v) }) {
-                            Icon(Icons.Default.Add, "Tambah ke antrean", tint = G.Muted)
-                        }
-                    }
-                )
+                // Tombol titik tiga (antrean, simpan, unduh, bagikan) muncul otomatis di setiap baris.
+                CompactVideoRow(v, onClick = { playback.open(v.url) })
             }
         }
     }
