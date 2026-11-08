@@ -170,6 +170,25 @@ fun PlayerScreen(
             if (st.loading) {
                 CircularProgressIndicator(color = G.Gold, modifier = Modifier.align(Alignment.Center))
             }
+            if (st.prebuffering && !st.loading && st.error == null) {
+                Column(
+                    Modifier.align(Alignment.Center).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(color = G.Gold)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Menyiapkan agar lancar… ${st.aheadSec} dtk siap",
+                        color = Color.White, textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        "Tekan putar untuk mulai langsung",
+                        color = Color(0xCCFFFFFF), textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
             val err = st.error
             if (err != null) {
                 Column(
@@ -209,7 +228,11 @@ private fun QualityChip(st: PlayerState, playback: PlaybackController, modifier:
     var open by remember { mutableStateOf(false) }
     Box(modifier) {
         Text(
-            "${st.selectedHeight}p",
+            when {
+                st.smooth -> "Lancar · ${st.selectedHeight}p"
+                st.auto -> "Otomatis · ${st.selectedHeight}p"
+                else -> "${st.selectedHeight}p"
+            },
             color = Color.White,
             fontWeight = FontWeight.SemiBold,
             style = MaterialTheme.typography.labelLarge,
@@ -219,13 +242,39 @@ private fun QualityChip(st: PlayerState, playback: PlaybackController, modifier:
                 .padding(horizontal = 12.dp, vertical = 6.dp)
         )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        "Otomatis (sesuai internet)",
+                        color = if (st.auto) G.Gold else G.Text,
+                        fontWeight = if (st.auto) FontWeight.Bold else FontWeight.Normal
+                    )
+                },
+                onClick = {
+                    open = false
+                    if (st.smooth) playback.setSmooth(false) else playback.setAuto()
+                }
+            )
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        "Mode Lancar 720p (prabuffer)",
+                        color = if (st.smooth) G.Gold else G.Text,
+                        fontWeight = if (st.smooth) FontWeight.Bold else FontWeight.Normal
+                    )
+                },
+                onClick = {
+                    open = false
+                    playback.setSmooth(!st.smooth)
+                }
+            )
             st.qualities.sortedByDescending { it.height }.forEach { q ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             q.label,
-                            color = if (q.height == st.selectedHeight) G.Gold else G.Text,
-                            fontWeight = if (q.height == st.selectedHeight) FontWeight.Bold else FontWeight.Normal
+                            color = if (!st.auto && q.height == st.selectedHeight) G.Gold else G.Text,
+                            fontWeight = if (!st.auto && q.height == st.selectedHeight) FontWeight.Bold else FontWeight.Normal
                         )
                     },
                     onClick = {

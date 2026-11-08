@@ -3,6 +3,7 @@ package id.gatra.app.player
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -10,7 +11,9 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
@@ -26,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,7 +62,11 @@ data class PlayerState(
     val qualities: List<QualityOption> = emptyList(),
     val selectedHeight: Int = 0,
     val expanded: Boolean = false,
-    val isLive: Boolean = false
+    val isLive: Boolean = false,
+    val auto: Boolean = false,
+    val smooth: Boolean = false,
+    val prebuffering: Boolean = false,
+    val aheadSec: Int = 0
 )
 
 /**
@@ -74,8 +82,28 @@ class PlaybackController(
     private val prefs = context.getSharedPreferences("gatra", Context.MODE_PRIVATE)
     private val dataSourceFactory = DataSource.Factory { YtChunkedDataSource(http) }
     private var job: Job? = null
+    private var gateJob: Job? = null
+    private var smooth = prefs.getBoolean(KEY_SMOOTH, false)
+    private var currentBitrate = 0.0
+    private var hasStarted = false
+
+    /** Pengukur kecepatan internet (dipakai juga oleh ExoPlayer, jadi perkiraannya makin akurat selama memutar). */
+    private val bandwidth = DefaultBandwidthMeter.getSingletonInstance(context)
+
+    // Penyangga lebih besar: video mengunduh lebih awal saat sinyal bagus, sehingga
+    // tetap lancar ketika sinyal turun sebentar. Mulai putar tetap cepat (2 dtk).
+    private val loadControl = DefaultLoadControl.Builder()
+        .setBufferDurationsMs(
+            /* minBufferMs = */ 40_000,
+            /* maxBufferMs = */ 100_000,
+            /* bufferForPlaybackMs = */ 2_000,
+            /* bufferForPlaybackAfterRebufferMs = */ 6_000
+        )
+        .build()
 
     val player: ExoPlayer = ExoPlayer.Builder(context)
+        .setBandwidthMeter(bandwidth)
+        .setLoadControl(loadControl)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -104,9 +132,17 @@ class PlaybackController(
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 _state.update { it.copy(buffering = playbackState == Player.STATE_BUFFERING) }
+                // Mode Lancar: bila video kehabisan data di tengah jalan, tahan dulu sampai
+                // penyangga terisi lagi supaya tidak putus-putus berulang kali.
+                if (playbackState == Player.STATE_BUFFERING && smooth && hasStarted &&
+                    player.playWhenReady && gateJob?.isActive != true && !_state.value.isLive
+                ) {
+                    startGate(REBUFFER_TARGET_MS, REBUFFER_MAX_WAIT_MS)
+                }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) hasStarted = true
                 _state.update { it.copy(isPlaying = isPlaying) }
             }
         })
@@ -135,11 +171,43 @@ class PlaybackController(
     fun setQuality(option: QualityOption) {
         val info = _state.value.info ?: return
         val pos = player.currentPosition
-        val wasPlaying = player.playWhenReady
+        val wasPlaying = player.playWhenReady || _state.value.prebuffering
         prefs.edit().putInt(KEY_HEIGHT, option.height).apply()
-        prepare(info, option, pos)
-        player.playWhenReady = wasPlaying
-        _state.update { it.copy(selectedHeight = option.height, error = null) }
+        prepare(info, option, pos, wasPlaying)
+        _state.update { it.copy(selectedHeight = option.height, error = null, auto = false) }
+    }
+
+    /** Mode Lancar 720p: unduh dulu beberapa saat (prabuffer) baru diputar, lalu tetap jalan walau internet pelan. */
+    fun setSmooth(on: Boolean) {
+        val s0 = _state.value
+        val info = s0.info ?: return
+        if (s0.isLive) return
+        smooth = on
+        prefs.edit().putBoolean(KEY_SMOOTH, on).apply()
+        val options = buildQualities(info)
+        val chosen = if (on) pickQuality(options, 720) else pickAuto(options)
+        prefs.edit().putInt(KEY_HEIGHT, if (on) 720 else AUTO).apply()
+        val pos = player.currentPosition
+        val wasPlaying = player.playWhenReady || _state.value.prebuffering
+        prepare(info, chosen, pos, wasPlaying)
+        _state.update {
+            it.copy(
+                smooth = on, qualities = options, error = null,
+                selectedHeight = chosen?.height ?: 0, auto = !on
+            )
+        }
+    }
+
+    /** Mode Otomatis: kualitas disesuaikan dengan kecepatan internet saat ini. */
+    fun setAuto() {
+        val s = _state.value
+        val info = s.info ?: return
+        val pos = player.currentPosition
+        val wasPlaying = player.playWhenReady || _state.value.prebuffering
+        prefs.edit().putInt(KEY_HEIGHT, AUTO).apply()
+        val chosen = pickAuto(s.qualities) ?: return
+        prepare(info, chosen, pos, wasPlaying)
+        _state.update { it.copy(selectedHeight = chosen.height, error = null, auto = true) }
     }
 
     fun togglePlay() {
@@ -160,6 +228,7 @@ class PlaybackController(
 
     fun stopAll() {
         job?.cancel()
+        gateJob?.cancel()
         player.stop()
         player.clearMediaItems()
         _state.value = PlayerState()
@@ -177,9 +246,10 @@ class PlaybackController(
 
     private fun load(url: String, startMs: Long) {
         job?.cancel()
+        gateJob?.cancel()
         player.stop()
         player.clearMediaItems()
-        _state.value = PlayerState(active = true, loading = true, url = url, expanded = true)
+        _state.value = PlayerState(active = true, loading = true, url = url, expanded = true, smooth = smooth)
         job = scope.launch {
             try {
                 val info = withContext(Dispatchers.IO) { StreamInfo.getInfo(ServiceList.YouTube, url) }
@@ -188,7 +258,9 @@ class PlaybackController(
                 if (!live && options.isEmpty()) {
                     throw IllegalStateException("Tidak ada aliran video yang bisa diputar untuk video ini.")
                 }
-                val chosen = pickQuality(options, prefs.getInt(KEY_HEIGHT, 720))
+                val pref = prefs.getInt(KEY_HEIGHT, AUTO)
+                val auto = pref == AUTO && !live
+                val chosen = if (auto) pickAuto(options) else pickQuality(options, pref)
                 prepare(info, chosen, startMs)
                 _state.update {
                     it.copy(
@@ -198,7 +270,9 @@ class PlaybackController(
                         info = info,
                         qualities = options,
                         selectedHeight = chosen?.height ?: 0,
-                        isLive = live
+                        isLive = live,
+                        auto = auto,
+                        smooth = smooth && !live
                     )
                 }
                 launch {
@@ -217,7 +291,7 @@ class PlaybackController(
         }
     }
 
-    private fun prepare(info: StreamInfo, option: QualityOption?, startMs: Long) {
+    private fun prepare(info: StreamInfo, option: QualityOption?, startMs: Long, resume: Boolean = true) {
         val meta = MediaMetadata.Builder()
             .setTitle(info.name)
             .setArtist(info.uploaderName)
@@ -237,9 +311,58 @@ class PlaybackController(
                 progressive(audio.content, null)
             )
         }
+        gateJob?.cancel()
+        hasStarted = false
         player.setMediaSource(source, startMs)
         player.prepare()
-        player.playWhenReady = true
+        if (resume && smooth && option != null) {
+            currentBitrate = cost(option)
+            startGate(INITIAL_TARGET_MS, INITIAL_MAX_WAIT_MS)
+        } else {
+            player.playWhenReady = resume
+        }
+    }
+
+    /**
+     * Tahan pemutaran sampai penyangga cukup. Mulai putar bila salah satu terpenuhi:
+     * (1) data di depan sudah [targetMs]; (2) sisa video diperkirakan selesai terunduh
+     * sebelum kepala putar menyusul; (3) video sudah penuh; (4) waktu tunggu habis;
+     * (5) pengguna menekan putar sendiri.
+     */
+    private fun startGate(targetMs: Long, maxWaitMs: Long) {
+        gateJob?.cancel()
+        player.playWhenReady = false
+        gateJob = scope.launch {
+            val t0 = SystemClock.elapsedRealtime()
+            _state.update { it.copy(prebuffering = true, aheadSec = 0) }
+            try {
+                while (true) {
+                    delay(500)
+                    if (_state.value.error != null) return@launch
+                    if (player.playWhenReady) return@launch // pengguna menekan putar
+                    val pos = player.currentPosition
+                    val buffered = player.bufferedPosition
+                    val ahead = (buffered - pos).coerceAtLeast(0L)
+                    _state.update { it.copy(aheadSec = (ahead / 1000).toInt()) }
+                    val dur = player.duration
+                    val known = dur != C.TIME_UNSET && dur > 0
+                    val full = known && buffered >= dur - 500
+                    val ended = player.playbackState == Player.STATE_ENDED
+                    val est = bandwidth.bitrateEstimate
+                    val canFinish = known && est > 0 && currentBitrate > 0 && ahead >= 8_000 && run {
+                        val needBits = (dur - buffered) / 1000.0 * currentBitrate
+                        val downloadSec = needBits / est
+                        val playSec = (dur - pos) / 1000.0
+                        downloadSec <= playSec * 0.9
+                    }
+                    val timeout = SystemClock.elapsedRealtime() - t0 >= maxWaitMs
+                    if (ahead >= targetMs || full || ended || canFinish || timeout) break
+                }
+                player.playWhenReady = true
+            } finally {
+                _state.update { it.copy(prebuffering = false) }
+            }
+        }
     }
 
     private fun progressive(url: String, meta: MediaMetadata?): MediaSource {
@@ -269,7 +392,12 @@ class PlaybackController(
                 .groupBy { it.height }
                 .forEach { (h, list) ->
                     // H.264 (MP4) paling kompatibel di semua HP, jadi didahulukan.
-                    val best = list.sortedWith(
+                    val best = if (smooth) {
+                        // Mode Lancar: pilih berkas terkecil (hindari AV1 yang berat dan 60 fps yang boros).
+                        val noAv1 = list.filter { !it.codec.orEmpty().startsWith("av01") }.ifEmpty { list }
+                        val lowFps = noAv1.filter { it.fps <= 30 }.ifEmpty { noAv1 }
+                        lowFps.minByOrNull { if (it.bitrate > 0) it.bitrate else Int.MAX_VALUE }!!
+                    } else list.sortedWith(
                         compareBy<VideoStream> { if (it.format == MediaFormat.MPEG_4) 0 else 1 }
                             .thenByDescending { it.bitrate }
                     ).first()
@@ -292,7 +420,40 @@ class PlaybackController(
             ?: options.minByOrNull { it.height }
     }
 
+    /**
+     * Pilih kualitas tertinggi (maksimal 720p) yang muat di ~70% kecepatan internet terukur.
+     * Bila belum ada perkiraan, mulai dari kualitas hemat (sekitar 360p).
+     */
+    private fun pickAuto(options: List<QualityOption>): QualityOption? {
+        if (options.isEmpty()) return null
+        val est = bandwidth.bitrateEstimate
+        val budget = if (est > 0) est * 0.7 else 900_000.0
+        val capped = options.filter { it.height <= 720 }.ifEmpty { options }
+        return capped.filter { cost(it) <= budget }.maxByOrNull { it.height }
+            ?: capped.minByOrNull { it.height }
+    }
+
+    /** Perkiraan kebutuhan bit/detik sebuah pilihan (video + audio terpisah bila ada). */
+    private fun cost(q: QualityOption): Double {
+        val byHeight = when {
+            q.height <= 144 -> 150_000
+            q.height <= 240 -> 300_000
+            q.height <= 360 -> 600_000
+            q.height <= 480 -> 1_000_000
+            q.height <= 720 -> 2_200_000
+            else -> 4_000_000
+        }
+        val video = if (q.video.bitrate > 0) q.video.bitrate else byHeight
+        return video + if (q.muxed) 0.0 else 130_000.0
+    }
+
     private companion object {
         const val KEY_HEIGHT = "quality_height"
+        const val AUTO = 0
+        const val KEY_SMOOTH = "smooth_mode"
+        const val INITIAL_TARGET_MS = 45_000L
+        const val INITIAL_MAX_WAIT_MS = 150_000L
+        const val REBUFFER_TARGET_MS = 25_000L
+        const val REBUFFER_MAX_WAIT_MS = 90_000L
     }
 }
