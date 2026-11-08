@@ -3,7 +3,9 @@ package id.gatra.app.ui.theme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
@@ -112,19 +114,21 @@ fun GatraLogo(boxSize: Dp = 28.dp) {
     }
 }
 
+/** Logo lengkap Gatra (lambang + nama) di atas latar putih agar terbaca di tema gelap. */
 @Composable
 fun Wordmark() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        GatraLogo(34.dp)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "Gatra",
-            style = TextStyle(
-                brush = G.Brand,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = (-0.5).sp
-            )
+    Box(
+        Modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.White)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(R.drawable.logo_full),
+            contentDescription = "Gatra",
+            modifier = Modifier.fillMaxHeight()
         )
     }
 }

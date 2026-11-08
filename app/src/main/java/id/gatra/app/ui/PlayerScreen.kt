@@ -117,6 +117,21 @@ fun PlayerScreen(
         }
     }
 
+    // Jaga layar tetap menyala selama video diputar / memuat / buffering.
+    // Dilepas saat jeda, error, atau pemutar ditutup/dikecilkan.
+    val keepAwake = st.error == null && (st.isPlaying || st.buffering || st.loading)
+    DisposableEffect(keepAwake) {
+        val window = activity.window
+        if (keepAwake) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
