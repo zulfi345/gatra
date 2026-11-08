@@ -104,12 +104,45 @@ fun relativeTime(ms: Long): String {
     }
 }
 
+/** Ubah teks tanggal dari YouTube ("9 mo ago", "2026-01-15T04:00:21-08:00") ke bahasa Indonesia. */
+fun localizeDate(raw: String?): String {
+    val t = raw?.trim().orEmpty()
+    if (t.isEmpty()) return ""
+    Regex("""(\d+)\s*(second|sec|minute|min|hour|hr|day|week|wk|month|mo|year|yr)s?\s+ago""", RegexOption.IGNORE_CASE)
+        .find(t)?.let { m ->
+            val n = m.groupValues[1]
+            val unit = when (m.groupValues[2].lowercase()) {
+                "second", "sec" -> "detik"
+                "minute", "min" -> "menit"
+                "hour", "hr" -> "jam"
+                "day" -> "hari"
+                "week", "wk" -> "minggu"
+                "month", "mo" -> "bulan"
+                else -> "tahun"
+            }
+            return "$n $unit lalu"
+        }
+    if (t.length >= 10 && t[4] == '-' && t[7] == '-') {
+        try {
+            val ms = java.time.OffsetDateTime.parse(t).toInstant().toEpochMilli()
+            return relativeTime(ms)
+        } catch (_: Exception) {
+            try {
+                val ms = java.time.LocalDate.parse(t.take(10)).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+                return relativeTime(ms)
+            } catch (_: Exception) {
+            }
+        }
+    }
+    return t
+}
+
 fun VideoItem.metaLine(includeChannel: Boolean = true): String {
     val parts = ArrayList<String>()
     if (includeChannel && channel.isNotBlank()) parts += channel
     if (live) parts += "Siaran langsung"
     else if (views >= 0) parts += "${compactCount(views)} x ditonton"
-    if (!date.isNullOrBlank()) parts += date
+    if (!date.isNullOrBlank()) parts += localizeDate(date)
     return parts.joinToString(" • ")
 }
 

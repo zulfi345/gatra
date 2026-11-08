@@ -1,0 +1,93 @@
+package id.gatra.app.data
+
+import android.content.Context
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import org.schabi.newpipe.extractor.stream.StreamInfo
+
+/** Pengaturan aplikasi (disimpan di SharedPreferences "gatra"). */
+class AppSettings(context: Context) {
+    private val prefs = context.getSharedPreferences("gatra", Context.MODE_PRIVATE)
+
+    /** Putar video berikutnya otomatis setelah selesai. */
+    var autoplay: Boolean
+        get() = prefs.getBoolean("autoplay", true)
+        set(v) = prefs.edit().putBoolean("autoplay", v).apply()
+
+    /** Lewati bagian sponsor memakai layanan komunitas SponsorBlock (mengirim ID video ke sponsor.ajay.app). */
+    var sponsorBlock: Boolean
+        get() = prefs.getBoolean("sponsorblock", false)
+        set(v) = prefs.edit().putBoolean("sponsorblock", v).apply()
+
+    /** Batasi kualitas otomatis maksimal 360p saat memakai data seluler. */
+    var dataSaver: Boolean
+        get() = prefs.getBoolean("data_saver", false)
+        set(v) = prefs.edit().putBoolean("data_saver", v).apply()
+
+    /** Unduhan hanya boleh berjalan lewat Wi-Fi / jaringan tak berbayar. */
+    var wifiOnlyDownload: Boolean
+        get() = prefs.getBoolean("wifi_only_download", true)
+        set(v) = prefs.edit().putBoolean("wifi_only_download", v).apply()
+}
+
+fun StreamInfo.toVideoItem(): VideoItem = VideoItem(
+    url = url ?: "",
+    title = name ?: "",
+    channel = uploaderName ?: "",
+    channelUrl = uploaderUrl,
+    thumb = thumbnails.bestUrl(),
+    durationSec = duration,
+    views = viewCount,
+    date = null
+)
+
+fun WatchLaterEntity.toVideo() = VideoItem(url, title, channel, channelUrl, thumbnail, duration, -1L, null)
+fun PlaylistItemEntity.toVideo() = VideoItem(url, title, channel, channelUrl, thumbnail, duration, -1L, null)
+
+/** Tonton nanti, playlist, dan unduhan. */
+class Library(private val db: GatraDb) {
+
+    // ----- Tonton nanti -----
+    val watchLater: Flow<List<WatchLaterEntity>> = db.watchLater().all()
+
+    fun isWatchLater(url: String): Flow<Boolean> = db.watchLater().count(url).map { it > 0 }
+
+    suspend fun addWatchLater(v: VideoItem) {
+        db.watchLater().insert(
+            WatchLaterEntity(v.url, v.title, v.channel, v.channelUrl, v.thumb, v.durationSec, System.currentTimeMillis())
+        )
+    }
+
+    suspend fun removeWatchLater(url: String) = db.watchLater().delete(url)
+
+    // ----- Playlist -----
+    val playlists: Flow<List<PlaylistEntity>> = db.playlists().all()
+    val playlistCounts: Flow<Map<Long, Int>> = db.playlists().counts().map { l -> l.associate { it.playlistId to it.n } }
+
+    suspend fun createPlaylist(name: String): Long =
+        db.playlists().insert(PlaylistEntity(name = name.trim(), createdAt = System.currentTimeMillis()))
+
+    suspend fun deletePlaylist(id: Long) {
+        db.playlists().deleteItems(id)
+        db.playlists().delete(id)
+    }
+
+    fun playlistItems(id: Long): Flow<List<PlaylistItemEntity>> = db.playlists().items(id)
+
+    suspend fun addToPlaylist(id: Long, v: VideoItem) {
+        db.playlists().addItem(
+            PlaylistItemEntity(id, v.url, v.title, v.channel, v.channelUrl, v.thumb, v.durationSec, System.currentTimeMillis())
+        )
+    }
+
+    suspend fun removeFromPlaylist(id: Long, url: String) = db.playlists().removeItem(id, url)
+
+    // ----- Unduhan -----
+    val downloads: Flow<List<DownloadEntity>> = db.downloads().all()
+
+    suspend fun downloadFor(url: String): DownloadEntity? = db.downloads().get(url)
+    suspend fun saveDownload(e: DownloadEntity) = db.downloads().upsert(e)
+    suspend fun setDownloadProgress(url: String, done: Long, total: Long) = db.downloads().progress(url, done, total)
+    suspend fun setDownloadStatus(url: String, status: Int) = db.downloads().setStatus(url, status)
+    suspend fun deleteDownload(url: String) = db.downloads().delete(url)
+}

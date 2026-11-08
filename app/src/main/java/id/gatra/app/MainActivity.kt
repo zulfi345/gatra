@@ -1,7 +1,9 @@
 package id.gatra.app
 
+import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -24,12 +26,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handleIntent(intent)
+        askNotificationPermission()
         setContent {
             GatraTheme {
                 CompositionLocalProvider(LocalInPip provides inPip) {
                     GatraRoot(gatra.playback, gatra.repo)
                 }
             }
+        }
+    }
+
+    /** Android 13+: izin notifikasi agar kemajuan unduhan terlihat. Ditanyakan sekali saja. */
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val prefs = getSharedPreferences("gatra", MODE_PRIVATE)
+        if (prefs.getBoolean("asked_notif", false)) return
+        prefs.edit().putBoolean("asked_notif", true).apply()
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
     }
 

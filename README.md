@@ -11,8 +11,16 @@ Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan a
 - Layar kecil (Picture-in-Picture): tekan Home saat video diputar.
 - Putar di latar belakang: layar boleh mati atau pindah aplikasi. Ada mini-player di bawah.
 - Langganan lokal: disimpan di HP, tanpa akun. Bisa impor dari Google Takeout (`subscriptions.csv`) dan ekspor.
-- Riwayat tontonan lokal (judul saja, bukan file video). Tidak ada video yang diunduh.
-- Tidak ada notifikasi video baru. Satu-satunya notifikasi: kontrol pemutar saat video berjalan.
+- Riwayat tontonan lokal (judul saja, bukan file video).
+- Tidak ada notifikasi video baru. Notifikasi hanya untuk kontrol pemutar dan kemajuan unduhan.
+- Layar tetap menyala selama video diputar (kecuali mode audio saja).
+- Kualitas Otomatis (menyesuaikan kecepatan internet), Mode Lancar 720p (prabuffer + berkas terkecil), dan cache disk 300 MB.
+- Kecepatan putar 0,5x–2x, subtitle, mode audio saja, dan pengatur waktu tidur (menu di pojok video).
+- Gestur: ketuk dua kali kiri/kanan = mundur/maju 10 detik; geser kiri = kecerahan, kanan = volume.
+- Putar otomatis video berikutnya dan antrean (tombol + di video terkait).
+- Koleksi: Tonton nanti, Playlist, Unduhan (tonton tanpa internet), dan Pengaturan.
+- Komentar video.
+- SponsorBlock (opsional, mati secara bawaan): melewati bagian sponsor lewat sponsor.ajay.app.
 - Buka tautan YouTube: tombol Bagikan dari aplikasi lain, atau ketuk tautan youtube.com / youtu.be.
 
 ## Cara build lewat GitHub (cukup dari HP)

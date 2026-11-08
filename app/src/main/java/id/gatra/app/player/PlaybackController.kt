@@ -2,6 +2,7 @@ package id.gatra.app.player
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
@@ -10,15 +11,26 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.FileDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.SingleSampleMediaSource
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+import id.gatra.app.data.AppSettings
+import id.gatra.app.data.DL_DONE
+import id.gatra.app.data.DownloadEntity
+import id.gatra.app.data.Library
 import id.gatra.app.data.Repo
+import id.gatra.app.data.VideoItem
 import id.gatra.app.data.bestUrl
 import id.gatra.app.data.friendlyError
 import kotlinx.coroutines.CancellationException
@@ -26,22 +38,28 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
 import org.schabi.newpipe.extractor.MediaFormat
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.DeliveryMethod
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import org.schabi.newpipe.extractor.stream.StreamType
 import org.schabi.newpipe.extractor.stream.VideoStream
+import java.io.File
+import java.security.MessageDigest
 
 /** Satu pilihan kualitas video. [muxed] = video sudah berisi suara (tanpa audio terpisah). */
 class QualityOption(
@@ -49,6 +67,14 @@ class QualityOption(
     val label: String,
     val video: VideoStream,
     val muxed: Boolean
+)
+
+/** Satu pilihan teks (subtitle). */
+class SubOption(
+    val lang: String,
+    val label: String,
+    val url: String,
+    val mime: String
 )
 
 data class PlayerState(
@@ -66,8 +92,93 @@ data class PlayerState(
     val auto: Boolean = false,
     val smooth: Boolean = false,
     val prebuffering: Boolean = false,
-    val aheadSec: Int = 0
+    val aheadSec: Int = 0,
+    val speed: Float = 1f,
+    val subtitles: List<SubOption> = emptyList(),
+    val subSelected: Int = -1,
+    val audioOnly: Boolean = false,
+    val queue: List<VideoItem> = emptyList(),
+    val sleepEndMs: Long = 0L,
+    val notice: String? = null,
+    val offlineTitle: String? = null
 )
+
+// ---------- Fungsi bantu tingkat atas (dipakai juga oleh pengunduh) ----------
+
+internal fun pickAudio(info: StreamInfo): AudioStream? {
+    val all = info.audioStreams.filter {
+        it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
+    }
+    if (all.isEmpty()) return null
+    // Utamakan trek asli (bukan hasil dubbing) bila extractor mengetahuinya.
+    val originals = all.filter { it.audioTrackType == null || it.audioTrackType == AudioTrackType.ORIGINAL }
+    val pool = if (originals.isNotEmpty()) originals else all
+    return pool.sortedWith(
+        compareBy<AudioStream> { if (it.format == MediaFormat.M4A) 0 else 1 }
+            .thenByDescending { it.averageBitrate }
+    ).first()
+}
+
+/** Baca properti extractor lewat refleksi supaya build tidak gagal bila nama getter berbeda antar versi. */
+private fun callString(target: Any, method: String): String = try {
+    (target.javaClass.getMethod(method).invoke(target) as? String).orEmpty()
+} catch (e: Exception) {
+    ""
+}
+
+private fun callBool(target: Any, method: String): Boolean = try {
+    (target.javaClass.getMethod(method).invoke(target) as? Boolean) ?: false
+} catch (e: Exception) {
+    false
+}
+
+private fun langTagOf(sub: Any): String {
+    val tag = callString(sub, "getLanguageTag")
+    if (tag.isNotBlank()) return tag
+    return try {
+        (sub.javaClass.getMethod("getLocale").invoke(sub) as? java.util.Locale)?.toLanguageTag().orEmpty()
+    } catch (e: Exception) {
+        ""
+    }
+}
+
+private fun qualityLabel(height: Int, fps: Int): String = if (fps > 30) "${height}p$fps" else "${height}p"
+
+internal fun buildQualityOptions(info: StreamInfo, smooth: Boolean): List<QualityOption> {
+    val out = ArrayList<QualityOption>()
+    if (pickAudio(info) != null) {
+        info.videoOnlyStreams
+            .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height in 1..1080 }
+            .groupBy { it.height }
+            .forEach { (h, list) ->
+                val best = if (smooth) {
+                    // Mode Lancar: pilih berkas terkecil (hindari AV1 yang berat dan 60 fps yang boros).
+                    val noAv1 = list.filter { !callString(it, "getCodec").startsWith("av01") }.ifEmpty { list }
+                    val lowFps = noAv1.filter { it.fps <= 30 }.ifEmpty { noAv1 }
+                    lowFps.minByOrNull { if (it.bitrate > 0) it.bitrate else Int.MAX_VALUE }!!
+                } else {
+                    // H.264 (MP4) paling kompatibel di semua HP, jadi didahulukan.
+                    list.sortedWith(
+                        compareBy<VideoStream> { if (it.format == MediaFormat.MPEG_4) 0 else 1 }
+                            .thenByDescending { it.bitrate }
+                    ).first()
+                }
+                out += QualityOption(h, qualityLabel(h, best.fps), best, false)
+            }
+    }
+    info.videoStreams
+        .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height > 0 }
+        .forEach { v ->
+            if (out.none { it.height == v.height }) out += QualityOption(v.height, qualityLabel(v.height, v.fps), v, true)
+        }
+    return out.sortedBy { it.height }
+}
+
+internal fun isMeteredNetwork(context: Context): Boolean = try {
+    (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
+} catch (e: Exception) {
+    false
+}
 
 /**
  * Pusat pemutaran: mengambil data video lewat NewPipeExtractor lalu memutarnya dengan ExoPlayer.
@@ -76,16 +187,40 @@ data class PlayerState(
 class PlaybackController(
     private val context: Context,
     private val repo: Repo,
-    http: OkHttpClient
+    private val http: OkHttpClient,
+    private val library: Library,
+    private val settings: AppSettings
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = context.getSharedPreferences("gatra", Context.MODE_PRIVATE)
     private val dataSourceFactory = DataSource.Factory { YtChunkedDataSource(http) }
+
+    // Cache disk: video yang baru ditonton bisa diputar ulang / di-seek tanpa mengunduh lagi.
+    private val cache: SimpleCache by lazy {
+        SimpleCache(
+            File(context.cacheDir, "media"),
+            LeastRecentlyUsedCacheEvictor(300L * 1024 * 1024),
+            StandaloneDatabaseProvider(context)
+        )
+    }
+    private val cachedFactory: DataSource.Factory by lazy {
+        CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(dataSourceFactory)
+            .setCacheKeyFactory { spec -> cacheKey(spec.uri) }
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    }
+
     private var job: Job? = null
     private var gateJob: Job? = null
+    private var noticeJob: Job? = null
+    private var sleepJob: Job? = null
     private var smooth = prefs.getBoolean(KEY_SMOOTH, false)
+    private var audioOnly = false
     private var currentBitrate = 0.0
     private var hasStarted = false
+    private var subOptions: List<SubOption> = emptyList()
+    private var segments: List<DoubleArray> = emptyList()
 
     /** Pengukur kecepatan internet (dipakai juga oleh ExoPlayer, jadi perkiraannya makin akurat selama memutar). */
     private val bandwidth = DefaultBandwidthMeter.getSingletonInstance(context)
@@ -132,6 +267,10 @@ class PlaybackController(
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 _state.update { it.copy(buffering = playbackState == Player.STATE_BUFFERING) }
+                if (playbackState == Player.STATE_ENDED) {
+                    onEnded()
+                    return
+                }
                 // Mode Lancar: bila video kehabisan data di tengah jalan, tahan dulu sampai
                 // penyangga terisi lagi supaya tidak putus-putus berulang kali.
                 if (playbackState == Player.STATE_BUFFERING && smooth && hasStarted &&
@@ -146,6 +285,21 @@ class PlaybackController(
                 _state.update { it.copy(isPlaying = isPlaying) }
             }
         })
+
+        // Pelompat sponsor (SponsorBlock): memeriksa posisi tiap 0,5 detik, hanya bila ada data.
+        scope.launch {
+            while (true) {
+                delay(500)
+                val segs = segments
+                if (segs.isEmpty() || !player.isPlaying) continue
+                val p = player.currentPosition / 1000.0
+                val hit = segs.firstOrNull { p >= it[0] && p < it[1] - 0.8 }
+                if (hit != null) {
+                    player.seekTo((hit[1] * 1000).toLong())
+                    notice("Bagian sponsor dilewati")
+                }
+            }
+        }
     }
 
     // ---------- Perintah dari UI ----------
@@ -159,6 +313,13 @@ class PlaybackController(
         }
         startService()
         load(url, 0L)
+    }
+
+    /** Putar daftar: video pertama langsung, sisanya masuk antrean. */
+    fun playAll(videos: List<VideoItem>) {
+        val first = videos.firstOrNull() ?: return
+        _state.update { it.copy(queue = videos.drop(1)) }
+        open(first.url)
     }
 
     fun retry() {
@@ -184,11 +345,11 @@ class PlaybackController(
         if (s0.isLive) return
         smooth = on
         prefs.edit().putBoolean(KEY_SMOOTH, on).apply()
-        val options = buildQualities(info)
+        val options = buildQualityOptions(info, smooth)
         val chosen = if (on) pickQuality(options, 720) else pickAuto(options)
         prefs.edit().putInt(KEY_HEIGHT, if (on) 720 else AUTO).apply()
         val pos = player.currentPosition
-        val wasPlaying = player.playWhenReady || _state.value.prebuffering
+        val wasPlaying = player.playWhenReady || s0.prebuffering
         prepare(info, chosen, pos, wasPlaying)
         _state.update {
             it.copy(
@@ -203,11 +364,71 @@ class PlaybackController(
         val s = _state.value
         val info = s.info ?: return
         val pos = player.currentPosition
-        val wasPlaying = player.playWhenReady || _state.value.prebuffering
+        val wasPlaying = player.playWhenReady || s.prebuffering
         prefs.edit().putInt(KEY_HEIGHT, AUTO).apply()
         val chosen = pickAuto(s.qualities) ?: return
         prepare(info, chosen, pos, wasPlaying)
         _state.update { it.copy(selectedHeight = chosen.height, error = null, auto = true) }
+    }
+
+    fun setSpeed(speed: Float) {
+        player.setPlaybackSpeed(speed)
+        _state.update { it.copy(speed = speed) }
+    }
+
+    /** [index] = urutan di daftar subtitle; -1 = matikan. */
+    fun setSubtitle(index: Int) {
+        val opts = subOptions
+        val ok = index in opts.indices
+        applySubtitle(if (ok) opts[index].lang else null)
+        _state.update { it.copy(subSelected = if (ok) index else -1) }
+    }
+
+    /** Mode audio saja: hanya audio yang diunduh (hemat data), layar boleh mati. */
+    fun setAudioOnly(on: Boolean) {
+        audioOnly = on
+        _state.update { it.copy(audioOnly = on) }
+        val s = _state.value
+        val info = s.info ?: return
+        if (s.isLive || s.qualities.isEmpty()) return
+        val chosen = s.qualities.firstOrNull { it.height == s.selectedHeight } ?: pickAuto(s.qualities)
+        val pos = player.currentPosition
+        val wasPlaying = player.playWhenReady || s.prebuffering
+        prepare(info, chosen, pos, wasPlaying)
+    }
+
+    /** Pengatur waktu tidur: jeda otomatis setelah [minutes] menit. 0 = matikan. */
+    fun setSleepTimer(minutes: Int) {
+        sleepJob?.cancel()
+        if (minutes <= 0) {
+            _state.update { it.copy(sleepEndMs = 0L) }
+            return
+        }
+        val ms = minutes * 60_000L
+        _state.update { it.copy(sleepEndMs = SystemClock.elapsedRealtime() + ms) }
+        sleepJob = scope.launch {
+            delay(ms)
+            gateJob?.cancel()
+            player.playWhenReady = false
+            _state.update { it.copy(sleepEndMs = 0L, prebuffering = false) }
+            notice("Pengatur waktu tidur: video dijeda")
+        }
+    }
+
+    fun enqueue(v: VideoItem) {
+        _state.update { it.copy(queue = it.queue + v) }
+        notice("Ditambahkan ke antrean")
+    }
+
+    fun removeFromQueue(index: Int) {
+        _state.update { s ->
+            if (index in s.queue.indices) s.copy(queue = s.queue.filterIndexed { i, _ -> i != index }) else s
+        }
+    }
+
+    /** Lompat ke video berikutnya (antrean dulu, lalu video terkait). */
+    fun skipNext() {
+        if (!playNextFromQueue()) playRelated()
     }
 
     fun togglePlay() {
@@ -229,12 +450,38 @@ class PlaybackController(
     fun stopAll() {
         job?.cancel()
         gateJob?.cancel()
+        sleepJob?.cancel()
+        segments = emptyList()
+        audioOnly = false
         player.stop()
         player.clearMediaItems()
         _state.value = PlayerState()
     }
 
+    /** Hapus cache video. */
+    fun clearCache() {
+        try {
+            for (k in cache.keys.toList()) cache.removeResource(k)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun cacheBytes(): Long = try {
+        cache.cacheSpace
+    } catch (e: Exception) {
+        0L
+    }
+
     // ---------- Internal ----------
+
+    private fun notice(msg: String) {
+        _state.update { it.copy(notice = msg) }
+        noticeJob?.cancel()
+        noticeJob = scope.launch {
+            delay(2500)
+            _state.update { it.copy(notice = null) }
+        }
+    }
 
     private fun startService() {
         try {
@@ -244,23 +491,77 @@ class PlaybackController(
         }
     }
 
+    private fun onEnded() {
+        if (_state.value.isLive) return
+        if (playNextFromQueue()) return
+        if (settings.autoplay) playRelated()
+    }
+
+    private fun playNextFromQueue(): Boolean {
+        val q = _state.value.queue
+        val next = q.firstOrNull() ?: return false
+        _state.update { it.copy(queue = q.drop(1)) }
+        open(next.url)
+        return true
+    }
+
+    private fun playRelated() {
+        val s = _state.value
+        val info = s.info ?: return
+        val next = info.relatedItems.filterIsInstance<StreamInfoItem>()
+            .firstOrNull { it.url != s.url && it.streamType != StreamType.LIVE_STREAM } ?: return
+        open(next.url)
+    }
+
+    private fun applySubtitle(lang: String?) {
+        val b = player.trackSelectionParameters.buildUpon()
+        if (lang == null) {
+            b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+        } else {
+            b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            b.setPreferredTextLanguage(lang)
+        }
+        player.trackSelectionParameters = b.build()
+    }
+
     private fun load(url: String, startMs: Long) {
         job?.cancel()
         gateJob?.cancel()
         player.stop()
         player.clearMediaItems()
-        _state.value = PlayerState(active = true, loading = true, url = url, expanded = true, smooth = smooth)
+        player.setPlaybackSpeed(1f)
+        applySubtitle(null)
+        segments = emptyList()
+        subOptions = emptyList()
+        val prev = _state.value
+        _state.value = PlayerState(
+            active = true, loading = true, url = url, expanded = true, smooth = smooth,
+            queue = prev.queue, sleepEndMs = prev.sleepEndMs, audioOnly = audioOnly
+        )
         job = scope.launch {
+            // Video yang sudah diunduh diputar langsung dari HP (tanpa internet, tanpa kuota).
+            val local = try {
+                library.downloadFor(url)?.takeIf { it.status == DL_DONE && filesExist(it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (local != null) {
+                loadLocal(local, startMs)
+                return@launch
+            }
             try {
                 val info = withContext(Dispatchers.IO) { StreamInfo.getInfo(ServiceList.YouTube, url) }
                 val live = info.streamType == StreamType.LIVE_STREAM && !info.hlsUrl.isNullOrBlank()
-                val options = if (live) emptyList() else buildQualities(info)
+                val options = if (live) emptyList() else buildQualityOptions(info, smooth)
                 if (!live && options.isEmpty()) {
                     throw IllegalStateException("Tidak ada aliran video yang bisa diputar untuk video ini.")
                 }
                 val pref = prefs.getInt(KEY_HEIGHT, AUTO)
                 val auto = pref == AUTO && !live
                 val chosen = if (auto) pickAuto(options) else pickQuality(options, pref)
+                subOptions = if (live) emptyList() else buildSubs(info)
                 prepare(info, chosen, startMs)
                 _state.update {
                     it.copy(
@@ -272,9 +573,11 @@ class PlaybackController(
                         selectedHeight = chosen?.height ?: 0,
                         isLive = live,
                         auto = auto,
-                        smooth = smooth && !live
+                        smooth = smooth && !live,
+                        subtitles = subOptions
                     )
                 }
+                loadSegments(info)
                 launch {
                     try {
                         repo.onWatched(info)
@@ -291,6 +594,52 @@ class PlaybackController(
         }
     }
 
+    private fun filesExist(d: DownloadEntity): Boolean {
+        val v = d.videoPath?.let { File(it).exists() } ?: false
+        val a = d.audioPath?.let { File(it).exists() } ?: false
+        return v || a
+    }
+
+    private fun localSource(file: File, meta: MediaMetadata?): MediaSource {
+        val item = MediaItem.Builder().setUri(Uri.fromFile(file)).apply { if (meta != null) setMediaMetadata(meta) }.build()
+        return ProgressiveMediaSource.Factory(FileDataSource.Factory()).createMediaSource(item)
+    }
+
+    private suspend fun loadLocal(d: DownloadEntity, startMs: Long) {
+        val meta = MediaMetadata.Builder()
+            .setTitle(d.title)
+            .setArtist(d.channel)
+            .apply { d.thumbnail?.let { setArtworkUri(Uri.parse(it)) } }
+            .build()
+        val v = d.videoPath?.let { File(it) }?.takeIf { it.exists() }
+        val a = d.audioPath?.let { File(it) }?.takeIf { it.exists() }
+        val source: MediaSource = when {
+            v != null && a != null -> MergingMediaSource(localSource(v, meta), localSource(a, null))
+            v != null -> localSource(v, meta)
+            a != null -> localSource(a, meta)
+            else -> return
+        }
+        hasStarted = false
+        player.setMediaSource(source, startMs)
+        player.prepare()
+        player.playWhenReady = true
+        _state.update { it.copy(loading = false, error = null, offlineTitle = d.title, selectedHeight = d.quality) }
+        // Detail video (deskripsi, video terkait) dimuat bila internet tersedia; gagal pun tidak masalah.
+        try {
+            val info = withContext(Dispatchers.IO) { StreamInfo.getInfo(ServiceList.YouTube, d.url) }
+            _state.update { it.copy(info = info) }
+            try {
+                repo.onWatched(info)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
     private fun prepare(info: StreamInfo, option: QualityOption?, startMs: Long, resume: Boolean = true) {
         val meta = MediaMetadata.Builder()
             .setTitle(info.name)
@@ -298,25 +647,32 @@ class PlaybackController(
             .apply { info.thumbnails.bestUrl()?.let { setArtworkUri(Uri.parse(it)) } }
             .build()
 
-        val source: MediaSource = if (option == null) {
-            HlsMediaSource.Factory(dataSourceFactory).createMediaSource(
+        val audioStream = pickAudio(info)
+        val audioBranch = audioOnly && option != null && audioStream != null
+
+        val base: MediaSource = when {
+            option == null -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(
                 MediaItem.Builder().setUri(info.hlsUrl).setMediaMetadata(meta).build()
             )
-        } else if (option.muxed) {
-            progressive(option.video.content, meta)
-        } else {
-            val audio = pickAudio(info) ?: throw IllegalStateException("Aliran audio tidak ditemukan.")
-            MergingMediaSource(
-                progressive(option.video.content, meta),
-                progressive(audio.content, null)
-            )
+            audioBranch -> progressive(audioStream!!.content, meta)
+            option.muxed -> progressive(option.video.content, meta)
+            else -> {
+                val audio = audioStream ?: throw IllegalStateException("Aliran audio tidak ditemukan.")
+                MergingMediaSource(
+                    progressive(option.video.content, meta),
+                    progressive(audio.content, null)
+                )
+            }
         }
+        val subs = if (option != null && !audioBranch) subtitleSources() else emptyList()
+        val source: MediaSource = if (subs.isEmpty()) base else MergingMediaSource(base, *subs.toTypedArray())
+
         gateJob?.cancel()
         hasStarted = false
         player.setMediaSource(source, startMs)
         player.prepare()
         if (resume && smooth && option != null) {
-            currentBitrate = cost(option)
+            currentBitrate = if (audioBranch) 130_000.0 else cost(option)
             startGate(INITIAL_TARGET_MS, INITIAL_MAX_WAIT_MS)
         } else {
             player.playWhenReady = resume
@@ -367,68 +723,117 @@ class PlaybackController(
 
     private fun progressive(url: String, meta: MediaMetadata?): MediaSource {
         val item = MediaItem.Builder().setUri(url).apply { if (meta != null) setMediaMetadata(meta) }.build()
-        return ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(item)
+        return ProgressiveMediaSource.Factory(cachedFactory).createMediaSource(item)
     }
 
-    private fun pickAudio(info: StreamInfo): AudioStream? {
-        val all = info.audioStreams.filter {
-            it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP
-        }
-        if (all.isEmpty()) return null
-        // Utamakan trek asli (bukan hasil dubbing) bila extractor mengetahuinya.
-        val originals = all.filter { it.audioTrackType == null || it.audioTrackType == AudioTrackType.ORIGINAL }
-        val pool = if (originals.isNotEmpty()) originals else all
-        return pool.sortedWith(
-            compareBy<AudioStream> { if (it.format == MediaFormat.M4A) 0 else 1 }
-                .thenByDescending { it.averageBitrate }
-        ).first()
+    private fun cacheKey(uri: Uri): String {
+        val id = uri.getQueryParameter("id")
+        val itag = uri.getQueryParameter("itag")
+        val clen = uri.getQueryParameter("clen")
+        return if (id != null && itag != null) "yt_${id}_${itag}_${clen.orEmpty()}" else uri.toString()
     }
 
-    private fun buildQualities(info: StreamInfo): List<QualityOption> {
-        val out = ArrayList<QualityOption>()
-        if (pickAudio(info) != null) {
-            info.videoOnlyStreams
-                .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height in 1..1080 }
-                .groupBy { it.height }
-                .forEach { (h, list) ->
-                    // H.264 (MP4) paling kompatibel di semua HP, jadi didahulukan.
-                    val best = if (smooth) {
-                        // Mode Lancar: pilih berkas terkecil (hindari AV1 yang berat dan 60 fps yang boros).
-                        val noAv1 = list.filter { !it.codec.orEmpty().startsWith("av01") }.ifEmpty { list }
-                        val lowFps = noAv1.filter { it.fps <= 30 }.ifEmpty { noAv1 }
-                        lowFps.minByOrNull { if (it.bitrate > 0) it.bitrate else Int.MAX_VALUE }!!
-                    } else list.sortedWith(
-                        compareBy<VideoStream> { if (it.format == MediaFormat.MPEG_4) 0 else 1 }
-                            .thenByDescending { it.bitrate }
-                    ).first()
-                    out += QualityOption(h, label(h, best.fps), best, false)
-                }
-        }
-        info.videoStreams
-            .filter { it.isUrl && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP && it.height > 0 }
-            .forEach { v ->
-                if (out.none { it.height == v.height }) out += QualityOption(v.height, label(v.height, v.fps), v, true)
+    // ---------- Subtitle ----------
+
+    private fun buildSubs(info: StreamInfo): List<SubOption> {
+        val all = info.subtitles.filter { it.isUrl }
+        if (all.isEmpty()) return emptyList()
+        val best = all.groupBy { langTagOf(it) }
+            .filterKeys { it.isNotBlank() }
+            .map { (_, list) ->
+                list.sortedWith(
+                    compareBy<org.schabi.newpipe.extractor.stream.SubtitlesStream>(
+                        { callBool(it, "isAutoGenerated") },
+                        { if (it.format?.name == "VTT") 0 else 1 }
+                    )
+                ).first()
             }
-        return out.sortedBy { it.height }
+            .sortedWith(
+                compareBy<org.schabi.newpipe.extractor.stream.SubtitlesStream>(
+                    { langTagOf(it) != "id" },
+                    { langTagOf(it) != "en" },
+                    { callString(it, "getDisplayLanguageName") }
+                )
+            )
+            .take(15)
+        return best.map {
+            val tag = langTagOf(it)
+            val label = callString(it, "getDisplayLanguageName").ifBlank { tag } +
+                if (callBool(it, "isAutoGenerated")) " (otomatis)" else ""
+            SubOption(tag, label, it.content, it.format?.let { f -> callString(f, "getMimeType") }.orEmpty().ifBlank { "text/vtt" })
+        }
     }
 
-    private fun label(height: Int, fps: Int): String = if (fps > 30) "${height}p$fps" else "${height}p"
-
-    private fun pickQuality(options: List<QualityOption>, wanted: Int): QualityOption? {
-        if (options.isEmpty()) return null
-        return options.filter { it.height <= wanted }.maxByOrNull { it.height }
-            ?: options.minByOrNull { it.height }
+    private fun subtitleSources(): List<MediaSource> = subOptions.map { o ->
+        val cfg = MediaItem.SubtitleConfiguration.Builder(Uri.parse(o.url))
+            .setMimeType(o.mime)
+            .setLanguage(o.lang)
+            .setLabel(o.label)
+            .setSelectionFlags(0)
+            .build()
+        SingleSampleMediaSource.Factory(dataSourceFactory)
+            .setTreatLoadErrorsAsEndOfStream(true)
+            .createMediaSource(cfg, C.TIME_UNSET)
     }
+
+    // ---------- SponsorBlock ----------
+
+    private fun loadSegments(info: StreamInfo) {
+        segments = emptyList()
+        if (!settings.sponsorBlock || info.streamType == StreamType.LIVE_STREAM) return
+        val id = info.id ?: return
+        scope.launch {
+            val found = withContext(Dispatchers.IO) { fetchSegments(id) }
+            segments = found
+        }
+    }
+
+    private fun fetchSegments(id: String): List<DoubleArray> {
+        return try {
+            // Hanya 4 karakter awal hash ID yang dikirim, demi privasi (cara resmi SponsorBlock).
+            val hash = MessageDigest.getInstance("SHA-256").digest(id.toByteArray())
+                .joinToString("") { "%02x".format(it) }.take(4)
+            val url = "https://sponsor.ajay.app/api/skipSegments/$hash".toHttpUrl().newBuilder()
+                .addQueryParameter("categories", "[\"sponsor\",\"selfpromo\",\"interaction\"]")
+                .build()
+            val req = Request.Builder().url(url).header("User-Agent", "Gatra").build()
+            http.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) return emptyList()
+                val body = r.body?.string().orEmpty()
+                val out = ArrayList<DoubleArray>()
+                val arr = JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    if (obj.optString("videoID") != id) continue
+                    val segs = obj.optJSONArray("segments") ?: continue
+                    for (j in 0 until segs.length()) {
+                        val seg = segs.getJSONObject(j)
+                        if (seg.optString("actionType", "skip") != "skip") continue
+                        val range = seg.optJSONArray("segment") ?: continue
+                        val s = range.optDouble(0)
+                        val e = range.optDouble(1)
+                        if (e - s >= 1.0) out += doubleArrayOf(s, e)
+                    }
+                }
+                out
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // ---------- Kualitas ----------
 
     /**
-     * Pilih kualitas tertinggi (maksimal 720p) yang muat di ~70% kecepatan internet terukur.
-     * Bila belum ada perkiraan, mulai dari kualitas hemat (sekitar 360p).
+     * Pilih kualitas tertinggi (maksimal 720p, atau 360p bila Hemat Data aktif di jaringan seluler)
+     * yang muat di ~70% kecepatan internet terukur. Bila belum ada perkiraan, mulai dari kualitas hemat.
      */
     private fun pickAuto(options: List<QualityOption>): QualityOption? {
         if (options.isEmpty()) return null
         val est = bandwidth.bitrateEstimate
         val budget = if (est > 0) est * 0.7 else 900_000.0
-        val capped = options.filter { it.height <= 720 }.ifEmpty { options }
+        val cap = if (settings.dataSaver && isMeteredNetwork(context)) 360 else 720
+        val capped = options.filter { it.height <= cap }.ifEmpty { options.take(1) }
         return capped.filter { cost(it) <= budget }.maxByOrNull { it.height }
             ?: capped.minByOrNull { it.height }
     }
@@ -445,6 +850,12 @@ class PlaybackController(
         }
         val video = if (q.video.bitrate > 0) q.video.bitrate else byHeight
         return video + if (q.muxed) 0.0 else 130_000.0
+    }
+
+    private fun pickQuality(options: List<QualityOption>, wanted: Int): QualityOption? {
+        if (options.isEmpty()) return null
+        return options.filter { it.height <= wanted }.maxByOrNull { it.height }
+            ?: options.minByOrNull { it.height }
     }
 
     private companion object {
