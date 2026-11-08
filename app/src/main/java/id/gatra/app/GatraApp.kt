@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.room.Room
 import id.gatra.app.data.GatraDb
 import id.gatra.app.data.GatraDownloader
+import id.gatra.app.data.MIGRATION_1_2
 import id.gatra.app.data.Repo
 import id.gatra.app.player.PlaybackController
 import okhttp3.OkHttpClient
@@ -34,6 +35,7 @@ class GatraApp : Application() {
         NewPipe.init(GatraDownloader(http), Localization("id", "ID"), ContentCountry("ID"))
 
         db = Room.databaseBuilder(this, GatraDb::class.java, "gatra.db")
+            .addMigrations(MIGRATION_1_2)
             .fallbackToDestructiveMigration()
             .build()
         repo = Repo(db, http)

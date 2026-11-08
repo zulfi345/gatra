@@ -69,8 +69,9 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
     val recommendations: Flow<List<VideoItem>> = db.recs().visible().map { list ->
         list.map {
             VideoItem(
-                url = it.url, title = it.title, channel = it.channel, channelUrl = null,
-                thumb = it.thumbnail, durationSec = it.duration, views = it.views, date = null
+                url = it.url, title = it.title, channel = it.channel, channelUrl = it.channelUrl,
+                thumb = it.thumbnail, durationSec = it.duration, views = it.views, date = null,
+                avatar = it.avatar
             )
         }
     }
@@ -111,12 +112,94 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                     RecEntity(
                         url = r.url, title = r.name ?: "", channel = r.uploaderName ?: "",
                         thumbnail = r.thumbnails.bestUrl(), duration = r.duration,
-                        views = r.viewCount, savedAt = now, rank = i
+                        views = r.viewCount, savedAt = now, rank = i,
+                        channelUrl = r.uploaderUrl, avatar = r.uploaderAvatars?.bestUrl()
                     )
                 }
             )
             db.recs().prune()
         }
+    }
+
+    // ---------- Foto profil channel ----------
+
+    private val avatarCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val avatarFailed = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val avatarGate = Semaphore(3)
+
+    /** Foto profil asli sebuah channel (disimpan di memori; juga ke langganan bila channel itu diikuti). */
+    suspend fun avatarFor(channelUrl: String): String? {
+        avatarCache[channelUrl]?.let { return it }
+        if (avatarFailed.containsKey(channelUrl)) return null
+        return withContext(Dispatchers.IO) {
+            val saved = db.subs().snapshot().firstOrNull { it.url == channelUrl }?.avatar
+            if (saved != null) {
+                avatarCache[channelUrl] = saved
+                return@withContext saved
+            }
+            val fetched = avatarGate.withPermit {
+                safe<String?>(null) { ChannelInfo.getInfo(yt, channelUrl).avatars?.bestUrl() }
+            }
+            if (fetched != null) {
+                avatarCache[channelUrl] = fetched
+                db.subs().setAvatar(channelIdOf(channelUrl) ?: "-", channelUrl, fetched)
+            } else {
+                avatarFailed[channelUrl] = true
+            }
+            fetched
+        }
+    }
+
+    /** Isi foto profil untuk langganan yang belum punya (misalnya hasil impor CSV). */
+    suspend fun backfillAvatars() = withContext(Dispatchers.IO) {
+        val missing = db.subs().snapshot().filter { it.avatar == null }.take(12)
+        if (missing.isEmpty()) return@withContext
+        val gate = Semaphore(3)
+        coroutineScope {
+            missing.map { s ->
+                async {
+                    gate.withPermit {
+                        safe<Unit>(Unit) {
+                            val a = ChannelInfo.getInfo(yt, s.url).avatars?.bestUrl()
+                            if (a != null) db.subs().setAvatar(s.channelId, s.url, a)
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    /**
+     * Ambil video segar untuk "Rekomendasi untukmu": dicari dari channel yang sering kamu tonton
+     * ditambah topik acak, lalu disimpan sehingga langsung tampil di beranda.
+     */
+    suspend fun refreshRecommendations(): Int = withContext(Dispatchers.IO) {
+        val channels = db.history().recentChannels().shuffled().take(3)
+        val topics = listOf(
+            "musik indonesia terbaru", "berita terkini hari ini", "video populer indonesia",
+            "gameplay seru", "resep masakan", "review teknologi terbaru", "film pendek", "podcast indonesia"
+        ).shuffled()
+        val queries = channels + topics.take(if (channels.isEmpty()) 3 else 1)
+        val results = coroutineScope {
+            queries.map { q ->
+                async { safe(emptyList<VideoItem>()) { search(q, false).videos.take(8) } }
+            }.awaitAll()
+        }
+        val merged = interleave(results).distinctBy { it.url }.take(30)
+        if (merged.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            db.recs().insertAll(
+                merged.mapIndexed { i, v ->
+                    RecEntity(
+                        url = v.url, title = v.title, channel = v.channel, thumbnail = v.thumb,
+                        duration = v.durationSec, views = v.views, savedAt = now, rank = i,
+                        channelUrl = v.channelUrl, avatar = v.avatar
+                    )
+                }
+            )
+            db.recs().prune()
+        }
+        merged.size
     }
 
     // ---------- Pencarian ----------
@@ -149,7 +232,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         if (tab != null) {
             val tabInfo = ChannelTabInfo.getInfo(yt, tab)
             videos = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>()
-                .map { it.toVideo(info.name, info.url) }
+                .map { it.toVideo(info.name, info.url, info.avatars?.bestUrl()) }
             next = if (tabInfo.hasNextPage()) tabInfo.nextPage else null
         }
         ChannelPage(
@@ -159,11 +242,13 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         )
     }
 
-    suspend fun moreChannel(tab: ListLinkHandler, page: Page, name: String, url: String): MoreVideos =
+    suspend fun moreChannel(
+        tab: ListLinkHandler, page: Page, name: String, url: String, avatar: String? = null
+    ): MoreVideos =
         withContext(Dispatchers.IO) {
             val p = ChannelTabInfo.getMoreItems(yt, tab, page)
             MoreVideos(
-                p.items.filterIsInstance<StreamInfoItem>().map { it.toVideo(name, url) },
+                p.items.filterIsInstance<StreamInfoItem>().map { it.toVideo(name, url, avatar) },
                 if (p.hasNextPage()) p.nextPage else null
             )
         }
@@ -253,7 +338,8 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                         durationSec = 0L,
                         views = views,
                         date = relativeTime(published),
-                        publishedMs = published
+                        publishedMs = published,
+                        avatar = sub.avatar
                     )
                 }
                 inEntry = false

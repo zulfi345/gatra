@@ -1,6 +1,7 @@
 package id.gatra.app.ui
 
 import android.app.Application
+import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,13 +10,17 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -49,14 +54,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var feed by mutableStateOf<List<VideoItem>>(emptyList())
         private set
-    var discover by mutableStateOf<List<VideoItem>>(emptyList())
-        private set
     var catItems by mutableStateOf<List<VideoItem>>(emptyList())
         private set
+
+    /** Pemuatan pertama (layar masih kosong). */
     var loading by mutableStateOf(true)
+        private set
+
+    /** Sedang menyegarkan (tarik layar atau tombol muat ulang). */
+    var refreshing by mutableStateOf(false)
         private set
     var error by mutableStateOf<String?>(null)
         private set
+
+    /** Pesan singkat (toast) bila penyegaran gagal padahal isi lama masih tampil. */
+    var message by mutableStateOf<String?>(null)
 
     val recs: StateFlow<List<VideoItem>> =
         repo.recommendations.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -64,16 +76,23 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val cache = HashMap<Int, List<VideoItem>>()
 
     init {
-        refresh()
-    }
-
-    fun refresh() {
-        cache.clear()
-        val index = selected
         viewModelScope.launch {
             loading = true
+            loadHome(force = false)
+            loading = false
+        }
+    }
+
+    /** Dipanggil oleh tarik-untuk-muat dan tombol muat ulang: selalu mengambil video baru. */
+    fun refresh() {
+        if (refreshing) return
+        val index = selected
+        viewModelScope.launch {
+            refreshing = true
             error = null
-            if (index == 0) loadHome() else loadCategory(index)
+            cache.clear()
+            if (index == 0) loadHome(force = true) else loadCategory(index)
+            refreshing = false
             loading = false
         }
     }
@@ -81,10 +100,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     fun select(i: Int) {
         selected = i
         error = null
-        if (i == 0) {
-            if (feed.isEmpty() && discover.isEmpty() && recs.value.isEmpty()) refresh()
-            return
-        }
+        if (i == 0) return
         cache[i]?.let { catItems = it; return }
         catItems = emptyList()
         viewModelScope.launch {
@@ -94,17 +110,20 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun loadHome() {
+    private suspend fun loadHome(force: Boolean) {
         try {
             feed = repo.feed()
-            if (feed.isEmpty() && recs.value.isEmpty()) {
-                discover = repo.discover()
-                if (discover.isEmpty()) error = "Belum ada video yang bisa dimuat. Periksa internet lalu coba lagi."
+            var fresh = 0
+            if (force || recs.value.isEmpty()) fresh = repo.refreshRecommendations()
+            if (feed.isEmpty() && fresh == 0 && recs.value.isEmpty()) {
+                error = "Belum ada video yang bisa dimuat. Periksa internet lalu coba lagi."
             }
+            viewModelScope.launch { repo.backfillAvatars() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             error = friendlyError(e)
+            message = friendlyError(e)
         }
     }
 
@@ -118,13 +137,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             throw e
         } catch (e: Exception) {
             if (selected == i) {
-                catItems = emptyList()
                 error = friendlyError(e)
+                message = friendlyError(e)
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onVideo: (String) -> Unit,
@@ -133,6 +153,14 @@ fun HomeScreen(
     vm: HomeViewModel = viewModel()
 ) {
     val recs by vm.recs.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LaunchedEffect(vm.message) {
+        vm.message?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            vm.message = null
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         GatraTopBar(
@@ -142,48 +170,50 @@ fun HomeScreen(
                 IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Cari", tint = G.Text) }
             }
         )
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-            item { CategoryChips(vm.labels, vm.selected, vm::select) }
+        PullToRefreshBox(
+            isRefreshing = vm.refreshing,
+            onRefresh = vm::refresh,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                item { CategoryChips(vm.labels, vm.selected, vm::select) }
 
-            if (vm.selected == 0) {
-                val feedTop = vm.feed.take(8)
-                val feedUrls = feedTop.map { it.url }.toSet()
-                val recList = recs.filter { it.url !in feedUrls }
+                if (vm.selected == 0) {
+                    val feedTop = vm.feed.take(8)
+                    val feedUrls = feedTop.map { it.url }.toSet()
+                    val recList = recs.filter { it.url !in feedUrls }
 
-                if (feedTop.isNotEmpty()) {
-                    item { SectionTitle("Terbaru dari langgananmu") }
-                    itemsIndexed(feedTop) { _, v ->
-                        VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                    if (feedTop.isNotEmpty()) {
+                        item { SectionTitle("Terbaru dari langgananmu") }
+                        itemsIndexed(feedTop) { _, v ->
+                            VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                        }
                     }
-                }
-                if (recList.isNotEmpty()) {
-                    item { SectionTitle("Rekomendasi untukmu") }
-                    itemsIndexed(recList) { _, v -> VideoCard(v, { onVideo(v.url) }) }
-                }
-                if (feedTop.isEmpty() && recList.isEmpty()) {
-                    when {
-                        vm.loading -> item { LoadingBox() }
-                        vm.discover.isNotEmpty() -> {
-                            item { SectionTitle("Jelajahi") }
-                            itemsIndexed(vm.discover) { _, v -> VideoCard(v, { onVideo(v.url) }) }
-                            item {
+                    if (recList.isNotEmpty()) {
+                        item { SectionTitle("Rekomendasi untukmu") }
+                        itemsIndexed(recList) { _, v ->
+                            VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                        }
+                    }
+                    if (feedTop.isEmpty() && recList.isEmpty()) {
+                        when {
+                            vm.loading -> item { LoadingBox() }
+                            vm.error != null -> item { ErrorBox(vm.error ?: "", vm::refresh) }
+                            else -> item {
                                 EmptyState(
                                     "Beranda akan menyesuaikan diri",
-                                    "Tonton video atau tekan Langganan di halaman channel. Rekomendasi di sini akan makin cocok dengan seleramu."
+                                    "Tarik layar ke bawah untuk memuat video. Tonton video atau tekan Langganan di halaman channel supaya rekomendasi makin cocok."
                                 )
                             }
                         }
-                        vm.error != null -> item { ErrorBox(vm.error ?: "", vm::refresh) }
                     }
-                } else if (vm.loading) {
-                    item { LoadingBox() }
-                }
-            } else {
-                when {
-                    vm.loading && vm.catItems.isEmpty() -> item { LoadingBox() }
-                    vm.error != null && vm.catItems.isEmpty() -> item { ErrorBox(vm.error ?: "", vm::refresh) }
-                    else -> itemsIndexed(vm.catItems) { _, v ->
-                        VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                } else {
+                    when {
+                        vm.loading && vm.catItems.isEmpty() -> item { LoadingBox() }
+                        vm.error != null && vm.catItems.isEmpty() -> item { ErrorBox(vm.error ?: "", vm::refresh) }
+                        else -> itemsIndexed(vm.catItems) { _, v ->
+                            VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                        }
                     }
                 }
             }

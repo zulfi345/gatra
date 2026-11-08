@@ -8,6 +8,8 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "subscriptions")
@@ -40,7 +42,9 @@ data class RecEntity(
     val duration: Long,
     val views: Long,
     val savedAt: Long,
-    val rank: Int
+    val rank: Int,
+    val channelUrl: String? = null,
+    val avatar: String? = null
 )
 
 @Dao
@@ -62,6 +66,9 @@ interface SubscriptionDao {
 
     @Query("DELETE FROM subscriptions WHERE channelId = :id OR url = :url")
     suspend fun delete(id: String, url: String)
+
+    @Query("UPDATE subscriptions SET avatar = :avatar WHERE channelId = :id OR url = :url")
+    suspend fun setAvatar(id: String, url: String, avatar: String)
 }
 
 @Dao
@@ -77,6 +84,9 @@ interface HistoryDao {
 
     @Query("DELETE FROM history")
     suspend fun clear()
+
+    @Query("SELECT channel FROM history WHERE channel != '' GROUP BY channel ORDER BY MAX(watchedAt) DESC LIMIT 12")
+    suspend fun recentChannels(): List<String>
 }
 
 @Dao
@@ -99,11 +109,19 @@ interface RecDao {
 
 @Database(
     entities = [SubscriptionEntity::class, HistoryEntity::class, RecEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class GatraDb : RoomDatabase() {
     abstract fun subs(): SubscriptionDao
     abstract fun history(): HistoryDao
     abstract fun recs(): RecDao
+}
+
+/** Versi 2: rekomendasi menyimpan tautan channel dan foto profilnya. Data lama tidak dihapus. */
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE recommendations ADD COLUMN channelUrl TEXT")
+        db.execSQL("ALTER TABLE recommendations ADD COLUMN avatar TEXT")
+    }
 }

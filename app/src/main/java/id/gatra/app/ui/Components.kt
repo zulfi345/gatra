@@ -32,6 +32,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
+import id.gatra.app.GatraApp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -82,6 +86,7 @@ fun GatraTopBar(
     }
 }
 
+/** Foto profil bulat. Huruf awal selalu ada di bawahnya sebagai cadangan selama foto dimuat. */
 @Composable
 fun InitialAvatar(name: String, size: Dp, modifier: Modifier = Modifier, imageUrl: String? = null) {
     Box(
@@ -91,6 +96,12 @@ fun InitialAvatar(name: String, size: Dp, modifier: Modifier = Modifier, imageUr
             .background(Brush.linearGradient(listOf(G.BlueDeep, G.Blue))),
         contentAlignment = Alignment.Center
     ) {
+        Text(
+            name.trim().firstOrNull()?.uppercase() ?: "?",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = (size.value * 0.42f).sp
+        )
         if (imageUrl != null) {
             AsyncImage(
                 model = imageUrl,
@@ -98,15 +109,23 @@ fun InitialAvatar(name: String, size: Dp, modifier: Modifier = Modifier, imageUr
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
-            Text(
-                name.trim().firstOrNull()?.uppercase() ?: "?",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = (size.value * 0.42f).sp
-            )
         }
     }
+}
+
+/** Foto profil channel pemilik video: dari data video, atau diambil dari halaman channel bila belum ada. */
+@Composable
+fun rememberAvatar(v: VideoItem): String? {
+    val app = LocalContext.current.applicationContext as GatraApp
+    val channelUrl = v.channelUrl
+    val avatar by produceState<String?>(v.avatar, v.avatar, channelUrl) {
+        if (v.avatar != null) {
+            value = v.avatar
+        } else if (!channelUrl.isNullOrBlank()) {
+            value = app.repo.avatarFor(channelUrl)
+        }
+    }
+    return avatar
 }
 
 @Composable
@@ -153,7 +172,8 @@ fun VideoCard(v: VideoItem, onClick: () -> Unit, onChannel: (() -> Unit)? = null
         Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             InitialAvatar(
                 v.channel, 36.dp,
-                Modifier.clickable(enabled = onChannel != null) { onChannel?.invoke() }
+                Modifier.clickable(enabled = onChannel != null) { onChannel?.invoke() },
+                imageUrl = rememberAvatar(v)
             )
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {

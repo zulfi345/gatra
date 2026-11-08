@@ -68,6 +68,11 @@ private val scheme = darkColorScheme(
     surfaceVariant = G.SurfaceHigh,
     onSurfaceVariant = G.Muted,
     outline = G.Outline,
+    surfaceContainerLowest = G.Bg,
+    surfaceContainerLow = G.Surface,
+    surfaceContainer = G.Surface,
+    surfaceContainerHigh = G.SurfaceHigh,
+    surfaceContainerHighest = G.SurfaceHigh,
     error = Color(0xFFFF6B6B)
 )
 

@@ -19,7 +19,8 @@ data class VideoItem(
     val views: Long,
     val date: String?,
     val publishedMs: Long = 0L,
-    val live: Boolean = false
+    val live: Boolean = false,
+    val avatar: String? = null
 )
 
 data class ChannelItem(
@@ -38,7 +39,11 @@ fun List<Image>.bestUrl(): String? {
     return pick.url
 }
 
-fun StreamInfoItem.toVideo(fallbackChannel: String? = null, fallbackChannelUrl: String? = null): VideoItem =
+fun StreamInfoItem.toVideo(
+    fallbackChannel: String? = null,
+    fallbackChannelUrl: String? = null,
+    fallbackAvatar: String? = null
+): VideoItem =
     VideoItem(
         url = url,
         title = name ?: "",
@@ -48,7 +53,8 @@ fun StreamInfoItem.toVideo(fallbackChannel: String? = null, fallbackChannelUrl: 
         durationSec = duration,
         views = viewCount,
         date = textualUploadDate,
-        live = streamType == StreamType.LIVE_STREAM
+        live = streamType == StreamType.LIVE_STREAM,
+        avatar = uploaderAvatars?.bestUrl() ?: fallbackAvatar
     )
 
 fun ChannelInfoItem.toChannel(): ChannelItem =

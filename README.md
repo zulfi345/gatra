@@ -4,6 +4,8 @@ Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan a
 
 ## Fitur
 - Beranda: video terbaru dari channel yang kamu ikuti, rekomendasi dari video yang pernah kamu tonton, dan kategori (musik, game, berita, dll).
+- Tarik layar ke bawah untuk menyegarkan (atau tekan tombol muat ulang): setiap kali ada rekomendasi video baru.
+- Foto profil asli channel di setiap video.
 - Cari video dan channel, dengan daftar pencarian terakhir.
 - Pemutar sendiri (ExoPlayer + NewPipeExtractor): tanpa iklan, pilihan kualitas sampai 1080p, layar penuh.
 - Layar kecil (Picture-in-Picture): tekan Home saat video diputar.
