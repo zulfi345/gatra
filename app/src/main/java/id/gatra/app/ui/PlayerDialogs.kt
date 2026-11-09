@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import id.gatra.app.GatraApp
 import id.gatra.app.data.VideoItem
 import id.gatra.app.data.friendlyError
+import id.gatra.app.data.toVideoItem
 import id.gatra.app.player.QualityOption
 import id.gatra.app.player.buildQualityOptions
 import id.gatra.app.ui.theme.G
@@ -67,6 +68,7 @@ fun DownloadDialog(info: StreamInfo, qualities: List<QualityOption>, app: GatraA
                                 .fillMaxWidth()
                                 .clickable {
                                     val msg = app.downloads.start(info, q, false)
+                                    if (msg == null) app.repo.noteAction(info.toVideoItem(), 3.0)
                                     Toast.makeText(ctx, msg ?: "Unduhan dimulai.", Toast.LENGTH_LONG).show()
                                     onDismiss()
                                 }
@@ -80,6 +82,7 @@ fun DownloadDialog(info: StreamInfo, qualities: List<QualityOption>, app: GatraA
                                 .fillMaxWidth()
                                 .clickable {
                                     val msg = app.downloads.start(info, null, true)
+                                    if (msg == null) app.repo.noteAction(info.toVideoItem(), 3.0)
                                     Toast.makeText(ctx, msg ?: "Unduhan dimulai.", Toast.LENGTH_LONG).show()
                                     onDismiss()
                                 }
@@ -141,6 +144,7 @@ fun PlaylistDialog(video: VideoItem, app: GatraApp, onDismiss: () -> Unit) {
         scope.launch {
             try {
                 app.library.addToPlaylist(id, video)
+                app.repo.noteAction(video, 3.0)
                 Toast.makeText(ctx, "Ditambahkan ke “$label”.", Toast.LENGTH_SHORT).show()
             } catch (e: CancellationException) {
                 throw e

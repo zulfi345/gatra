@@ -5,7 +5,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -44,16 +48,12 @@ fun PlayerMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier
     }
 
     Box(modifier) {
-        Text(
-            label,
-            color = Color.White,
-            fontWeight = FontWeight.SemiBold,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier
-                .background(Color(0x99000000), RoundedCornerShape(16.dp))
-                .clickable { page = 0; open = true }
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-        )
+        IconButton(
+            onClick = { page = 0; open = true },
+            modifier = Modifier.background(Color(0x66000000), CircleShape)
+        ) {
+            Icon(Icons.Default.Settings, "Pengaturan pemutar", tint = Color.White)
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             when (page) {
                 1 -> {

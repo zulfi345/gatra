@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
 import android.view.GestureDetector
+import android.view.View
 import android.view.MotionEvent
 import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
@@ -99,6 +100,7 @@ fun PlayerScreen(
     var forcePortrait by remember { mutableStateOf(false) }
     val fullscreen = landscape || manualFullscreen
     var hud by remember { mutableStateOf<String?>(null) }
+    var controlsVisible by remember { mutableStateOf(true) }
     LaunchedEffect(hud) {
         if (hud != null) {
             delay(900)
@@ -190,16 +192,25 @@ fun PlayerScreen(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     PlayerView(ctx).apply {
-                        player = playback.player
+                        player = playback.uiPlayer
                         setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
                         setControllerShowTimeoutMs(3000)
+                        // Mundur/maju 10 detik sudah ada lewat ketuk dua kali, jadi tombolnya dihapus.
+                        setShowRewindButton(false)
+                        setShowFastForwardButton(false)
+                        setShowPreviousButton(true)
+                        setShowNextButton(true)
+                        // Tombol kecilkan dan pengaturan ikut muncul/hilang bersama kontrol pemutar.
+                        setControllerVisibilityListener(
+                            PlayerView.ControllerVisibilityListener { v -> controlsVisible = (v == View.VISIBLE) }
+                        )
                         setFullscreenButtonClickListener { toggleFullscreen.value() }
                         installGestures(this, activity, playback.player) { hud = it }
                     }
                 },
                 update = { view ->
                     view.useController = !inPip
-                    view.player = playback.player
+                    view.player = playback.uiPlayer
                 }
             )
 
@@ -251,7 +262,7 @@ fun PlayerScreen(
                 }
             }
 
-            if (!inPip) {
+            if (!inPip && (controlsVisible || st.error != null || st.loading)) {
                 if (!fullscreen) {
                     IconButton(
                         onClick = playback::minimize,
@@ -376,7 +387,10 @@ private fun PlayerDetails(
                     ActionChip(if (later) "Tersimpan ✓" else "Tonton nanti", active = later) {
                         scope.launch {
                             try {
-                                if (later) app.library.removeWatchLater(current.url) else app.library.addWatchLater(current)
+                                if (later) app.library.removeWatchLater(current.url) else {
+                                    app.library.addWatchLater(current)
+                                    app.repo.noteAction(current, 3.0)
+                                }
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (_: Exception) {

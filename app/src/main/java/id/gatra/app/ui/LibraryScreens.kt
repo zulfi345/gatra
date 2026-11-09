@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -41,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -70,6 +72,24 @@ private fun SubTopBar(title: String, onBack: () -> Unit, actions: @Composable Ro
         actions = actions
     )
 }
+
+/** Pilihan bahasa audio utama: kode bahasa dan namanya ("" = audio asli). */
+private val AUDIO_LANGS = listOf(
+    "" to "Asli (bawaan video)",
+    "id" to "Indonesia",
+    "en" to "Inggris",
+    "ja" to "Jepang",
+    "ko" to "Korea",
+    "ar" to "Arab",
+    "hi" to "Hindi",
+    "es" to "Spanyol",
+    "fr" to "Prancis",
+    "de" to "Jerman",
+    "pt" to "Portugis",
+    "ru" to "Rusia",
+    "zh" to "Mandarin",
+    "ms" to "Melayu"
+)
 
 private fun mb(bytes: Long): String = String.format(java.util.Locale.US, "%.1f MB", bytes / 1_048_576.0)
 
@@ -340,6 +360,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     var wifiOnly by remember { mutableStateOf(st.wifiOnlyDownload) }
     var cacheBytes by remember { mutableLongStateOf(app.playback.cacheBytes()) }
     var confirmHistory by remember { mutableStateOf(false) }
+    var audioLang by remember { mutableStateOf(st.preferredAudioLang) }
+    var pickingAudio by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         SubTopBar("Pengaturan", onBack)
@@ -360,9 +382,25 @@ fun SettingsScreen(onBack: () -> Unit) {
                     sponsor
                 ) { sponsor = it; st.sponsorBlock = it }
                 HorizontalDivider(color = G.Outline)
+                LibRow(
+                    "Bahasa audio utama",
+                    (AUDIO_LANGS.firstOrNull { it.first == audioLang }?.second ?: "Asli (bawaan video)") +
+                        " • dipakai otomatis di video yang punya dubbing"
+                ) { pickingAudio = true }
                 LibRow("Tampilkan lagi video yang disembunyikan", "Dari menu “Tidak tertarik” dan “Jangan rekomendasikan channel”") {
                     st.clearHidden()
                     android.widget.Toast.makeText(ctx, "Semua video dan channel ditampilkan lagi.", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                LibRow("Atur ulang preferensi rekomendasi", "Hapus minat yang dipelajari dari tontonanmu; Beranda mulai dari nol") {
+                    scope.launch {
+                        try {
+                            app.repo.resetSignals()
+                            android.widget.Toast.makeText(ctx, "Preferensi rekomendasi diatur ulang.", android.widget.Toast.LENGTH_SHORT).show()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                        }
+                    }
                 }
                 LibRow("Hapus cache video", "Terpakai ${mb(cacheBytes)}") {
                     app.playback.clearCache()
@@ -372,6 +410,43 @@ fun SettingsScreen(onBack: () -> Unit) {
                 LibRow("Tentang Gatra", "Versi 1.0.0 • Untuk Indonesia Maju") {}
             }
         }
+    }
+
+    if (pickingAudio) {
+        AlertDialog(
+            onDismissRequest = { pickingAudio = false },
+            containerColor = G.SurfaceHigh,
+            title = { Text("Bahasa audio utama") },
+            text = {
+                Column {
+                    Text(
+                        "Dipakai otomatis di setiap video yang punya trek audio bahasa ini (dubbing YouTube). " +
+                            "Kalau videonya tidak punya, dipakai audio asli. Memilih bahasa lain di menu pemutar juga mengubah pilihan ini.",
+                        color = G.Muted,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                        items(AUDIO_LANGS) { (code, name) ->
+                            Text(
+                                name,
+                                color = if (code == audioLang) G.Gold else G.Text,
+                                fontWeight = if (code == audioLang) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        audioLang = code
+                                        st.preferredAudioLang = code
+                                        pickingAudio = false
+                                    }
+                                    .padding(vertical = 12.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { pickingAudio = false }) { Text("Tutup", color = G.Gold) } }
+        )
     }
 
     if (confirmHistory) {

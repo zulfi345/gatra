@@ -54,6 +54,15 @@ class AppSettings(context: Context) {
         _hiddenChannels.value = emptySet()
     }
 
+    /**
+     * Bahasa audio utama (kode bahasa, misalnya "id" = Indonesia). Dipakai otomatis di setiap video yang punya
+     * trek audio bahasa itu (dubbing YouTube); bila tidak ada, dipakai audio asli. Kosong = selalu audio asli.
+     * Berubah otomatis bila kamu memilih bahasa lain di menu pemutar.
+     */
+    var preferredAudioLang: String
+        get() = prefs.getString("audio_lang", "id") ?: "id"
+        set(v) = prefs.edit().putString("audio_lang", v).apply()
+
     /** Unduhan hanya boleh berjalan lewat Wi-Fi / jaringan tak berbayar. */
     var wifiOnlyDownload: Boolean
         get() = prefs.getBoolean("wifi_only_download", true)

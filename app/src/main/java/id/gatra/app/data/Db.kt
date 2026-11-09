@@ -47,6 +47,14 @@ data class RecEntity(
     val avatar: String? = null
 )
 
+/** Minat yang dipelajari dari kebiasaanmu: "ch:<channel>" atau "kw:<kata kunci>", dengan bobot yang meluruh seiring waktu. */
+@Entity(tableName = "signals")
+data class SignalEntity(
+    @PrimaryKey val name: String,
+    val weight: Double,
+    val updatedAt: Long
+)
+
 /** Video yang disimpan untuk ditonton nanti. */
 @Entity(tableName = "watch_later")
 data class WatchLaterEntity(
@@ -204,6 +212,30 @@ interface HistoryDao {
 
     @Query("SELECT channel FROM history WHERE channel != '' GROUP BY channel ORDER BY MAX(watchedAt) DESC LIMIT 12")
     suspend fun recentChannels(): List<String>
+
+    @Query("SELECT channel FROM history WHERE channelUrl = :url AND channel != '' LIMIT 1")
+    suspend fun channelNameFor(url: String): String?
+}
+
+@Dao
+interface SignalDao {
+    @Query("SELECT * FROM signals")
+    fun allFlow(): Flow<List<SignalEntity>>
+
+    @Query("SELECT * FROM signals")
+    suspend fun all(): List<SignalEntity>
+
+    @Query("SELECT * FROM signals WHERE name = :name")
+    suspend fun get(name: String): SignalEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(e: SignalEntity)
+
+    @Query("DELETE FROM signals WHERE weight > -0.05 AND weight < 0.05")
+    suspend fun pruneZero()
+
+    @Query("DELETE FROM signals")
+    suspend fun clear()
 }
 
 @Dao
@@ -214,12 +246,16 @@ interface RecDao {
     )
     fun visible(): Flow<List<RecEntity>>
 
+    /** Kumpulan calon rekomendasi (belum ditonton). Urutan akhirnya ditentukan oleh [Ranking]. */
+    @Query("SELECT * FROM recommendations WHERE url NOT IN (SELECT url FROM history) ORDER BY savedAt DESC, rank ASC LIMIT 200")
+    fun pool(): Flow<List<RecEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(items: List<RecEntity>)
 
     @Query(
         "DELETE FROM recommendations WHERE url NOT IN " +
-            "(SELECT url FROM recommendations ORDER BY savedAt DESC, rank ASC LIMIT 120)"
+            "(SELECT url FROM recommendations ORDER BY savedAt DESC, rank ASC LIMIT 250)"
     )
     suspend fun prune()
 }
@@ -227,9 +263,10 @@ interface RecDao {
 @Database(
     entities = [
         SubscriptionEntity::class, HistoryEntity::class, RecEntity::class,
-        WatchLaterEntity::class, PlaylistEntity::class, PlaylistItemEntity::class, DownloadEntity::class
+        WatchLaterEntity::class, PlaylistEntity::class, PlaylistItemEntity::class, DownloadEntity::class,
+        SignalEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class GatraDb : RoomDatabase() {
@@ -239,6 +276,7 @@ abstract class GatraDb : RoomDatabase() {
     abstract fun watchLater(): WatchLaterDao
     abstract fun playlists(): PlaylistDao
     abstract fun downloads(): DownloadDao
+    abstract fun signals(): SignalDao
 }
 
 /** Versi 2: rekomendasi menyimpan tautan channel dan foto profilnya. Data lama tidak dihapus. */
@@ -272,6 +310,16 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
                 "`quality` INTEGER NOT NULL, `videoPath` TEXT, `audioPath` TEXT, `totalBytes` INTEGER NOT NULL, " +
                 "`doneBytes` INTEGER NOT NULL, `status` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, " +
                 "PRIMARY KEY(`url`))"
+        )
+    }
+}
+
+/** Versi 4: tabel minat untuk algoritma rekomendasi. Data lama tidak dihapus. */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `signals` (`name` TEXT NOT NULL, `weight` REAL NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`name`))"
         )
     }
 }

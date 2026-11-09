@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -70,7 +71,7 @@ class QualityOption(
 )
 
 /** Satu pilihan bahasa audio (trek asli atau dubbing YouTube). */
-class AudioTrackOption(val id: String, val label: String, val original: Boolean)
+class AudioTrackOption(val id: String, val label: String, val original: Boolean, val lang: String)
 
 /** Satu pilihan teks (subtitle). */
 class SubOption(
@@ -164,12 +165,13 @@ internal fun buildAudioTracks(info: StreamInfo): List<AudioTrackOption> {
     if (groups.size < 2) return emptyList()
     return groups.map { (id, list) ->
         val s = list.first()
-        val loc = try {
-            (s.javaClass.getMethod("getAudioLocale").invoke(s) as? java.util.Locale)
-                ?.getDisplayLanguage(java.util.Locale("id")).orEmpty()
+        val locale = try {
+            s.javaClass.getMethod("getAudioLocale").invoke(s) as? java.util.Locale
         } catch (e: Exception) {
-            ""
+            null
         }
+        val loc = locale?.getDisplayLanguage(java.util.Locale("id")).orEmpty()
+        val langCode = (locale?.language.orEmpty().ifBlank { id.substringBefore('.') }).substringBefore('-').lowercase()
         val name = callString(s, "getAudioTrackName").ifBlank { loc }.ifBlank { id }
         val typeName = s.audioTrackType?.name
         val tag = when (typeName) {
@@ -179,7 +181,7 @@ internal fun buildAudioTracks(info: StreamInfo): List<AudioTrackOption> {
             "DESCRIPTIVE" -> "deskriptif"
             else -> "alternatif"
         }
-        AudioTrackOption(id, if (tag.isEmpty()) name else "$name ($tag)", typeName == "ORIGINAL")
+        AudioTrackOption(id, if (tag.isEmpty()) name else "$name ($tag)", typeName == "ORIGINAL", langCode)
     }.sortedBy { if (it.original) 0 else 1 }
 }
 
@@ -260,6 +262,8 @@ class PlaybackController(
     private var audioOnly = false
     private var currentBitrate = 0.0
     private var hasStarted = false
+    private var maxPosMs = 0L
+    private var watchRecorded = false
     private var subOptions: List<SubOption> = emptyList()
     private var audioTrackId: String? = null
     private val history = ArrayList<String>()
@@ -293,6 +297,33 @@ class PlaybackController(
         .setWakeMode(C.WAKE_MODE_NETWORK)
         .build()
 
+    /**
+     * Pemutar yang dipakai layar dan notifikasi: tombol panah sebelumnya/berikutnya
+     * pindah ke video sebelumnya/berikutnya (bukan ke item dalam daftar putar).
+     */
+    val uiPlayer: Player = object : ForwardingPlayer(player) {
+        private val navCommands = intArrayOf(
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_NEXT,
+            Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM
+        )
+
+        override fun getAvailableCommands(): Player.Commands {
+            val b = super.getAvailableCommands().buildUpon()
+            for (c in navCommands) b.add(c)
+            return b.build()
+        }
+
+        override fun isCommandAvailable(command: Int): Boolean =
+            command in navCommands || super.isCommandAvailable(command)
+
+        override fun seekToPrevious() = onPreviousPressed()
+        override fun seekToNext() = onNextPressed()
+        override fun seekToPreviousMediaItem() = onPreviousPressed()
+        override fun seekToNextMediaItem() = onNextPressed()
+        override fun hasPreviousMediaItem(): Boolean = true
+        override fun hasNextMediaItem(): Boolean = true
+    }
+
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
 
@@ -311,6 +342,9 @@ class PlaybackController(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 _state.update { it.copy(buffering = playbackState == Player.STATE_BUFFERING) }
                 if (playbackState == Player.STATE_ENDED) {
+                    val durMs = player.duration
+                    if (durMs != C.TIME_UNSET && durMs > 0) maxPosMs = maxOf(maxPosMs, durMs)
+                    finalizeWatch()
                     onEnded()
                     return
                 }
@@ -333,6 +367,7 @@ class PlaybackController(
         scope.launch {
             while (true) {
                 delay(500)
+                if (player.isPlaying) maxPosMs = maxOf(maxPosMs, player.currentPosition)
                 val segs = segments
                 if (segs.isEmpty() || !player.isPlaying) continue
                 val p = player.currentPosition / 1000.0
@@ -469,6 +504,12 @@ class PlaybackController(
     fun setAudioTrack(id: String) {
         audioTrackId = id
         _state.update { it.copy(audioTrackSel = id) }
+        // Pilihan ini jadi bahasa audio utama untuk video-video berikutnya (bisa diubah di Pengaturan).
+        val t = _state.value.audioTracks.firstOrNull { it.id == id }
+        if (t != null && t.lang.isNotBlank()) {
+            settings.preferredAudioLang = t.lang
+            notice("Bahasa audio utama: ${t.label}")
+        }
         reprepare()
     }
 
@@ -513,8 +554,14 @@ class PlaybackController(
 
     /** Lompat ke video berikutnya (antrean dulu, lalu video terkait). */
     fun skipNext() {
-        if (!playNextFromQueue()) playRelated()
+        if (!playNextFromQueue() && !playRelated()) notice("Tidak ada video berikutnya")
     }
+
+    private fun onPreviousPressed() {
+        if (history.isEmpty()) notice("Belum ada video sebelumnya") else playPrevious()
+    }
+
+    private fun onNextPressed() = skipNext()
 
     fun togglePlay() {
         if (player.isPlaying) player.pause() else player.play()
@@ -533,6 +580,7 @@ class PlaybackController(
     }
 
     fun stopAll() {
+        finalizeWatch()
         job?.cancel()
         gateJob?.cancel()
         sleepJob?.cancel()
@@ -592,12 +640,13 @@ class PlaybackController(
         return true
     }
 
-    private fun playRelated() {
+    private fun playRelated(): Boolean {
         val s = _state.value
-        val info = s.info ?: return
+        val info = s.info ?: return false
         val next = info.relatedItems.filterIsInstance<StreamInfoItem>()
-            .firstOrNull { it.url != s.url && it.url !in history && it.streamType != StreamType.LIVE_STREAM } ?: return
+            .firstOrNull { it.url != s.url && it.url !in history && it.streamType != StreamType.LIVE_STREAM } ?: return false
         open(next.url)
+        return true
     }
 
     private fun applySubtitle(lang: String?) {
@@ -611,7 +660,21 @@ class PlaybackController(
         player.trackSelectionParameters = b.build()
     }
 
+    /** Catat berapa lama video yang baru ditonton diputar, untuk algoritma rekomendasi. Dicatat sekali per video. */
+    private fun finalizeWatch() {
+        val s = _state.value
+        val info = s.info ?: return
+        if (s.isLive || watchRecorded) return
+        watchRecorded = true
+        val durMs = info.duration * 1000L
+        val ratio = if (durMs > 0) (maxPosMs.toDouble() / durMs).coerceIn(0.0, 1.0) else 0.0
+        repo.noteWatch(info, ratio, maxPosMs)
+    }
+
     private fun load(url: String, startMs: Long) {
+        finalizeWatch()
+        maxPosMs = 0L
+        watchRecorded = false
         job?.cancel()
         gateJob?.cancel()
         player.stop()
@@ -652,6 +715,10 @@ class PlaybackController(
                 val chosen = if (auto) pickAuto(options) else pickQuality(options, pref)
                 subOptions = if (live) emptyList() else buildSubs(info)
                 val tracks = if (live) emptyList() else buildAudioTracks(info)
+                // Pakai bahasa audio utama (mis. dubbing Indonesia) bila video punya trek itu.
+                val prefLang = settings.preferredAudioLang
+                audioTrackId = if (tracks.isEmpty() || prefLang.isBlank()) null
+                else tracks.firstOrNull { it.lang == prefLang }?.id
                 prepare(info, chosen, startMs)
                 _state.update {
                     it.copy(
@@ -666,7 +733,7 @@ class PlaybackController(
                         smooth = smooth && !live,
                         subtitles = subOptions,
                         audioTracks = tracks,
-                        audioTrackSel = if (tracks.isEmpty()) null else audioTrackIdOf(pickAudio(info))
+                        audioTrackSel = if (tracks.isEmpty()) null else (audioTrackId ?: audioTrackIdOf(pickAudio(info)))
                     )
                 }
                 loadSegments(info)

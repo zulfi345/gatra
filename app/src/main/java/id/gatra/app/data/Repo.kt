@@ -2,11 +2,16 @@ package id.gatra.app.data
 
 import android.util.Xml
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -66,15 +71,75 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
 
     val subscriptions: Flow<List<SubscriptionEntity>> = db.subs().all()
     val history: Flow<List<HistoryEntity>> = db.history().all()
-    val recommendations: Flow<List<VideoItem>> = db.recs().visible().map { list ->
-        list.map {
-            VideoItem(
-                url = it.url, title = it.title, channel = it.channel, channelUrl = it.channelUrl,
-                thumb = it.thumbnail, durationSec = it.duration, views = it.views, date = null,
-                avatar = it.avatar
-            )
+
+    /** Rekomendasi Beranda, diurutkan oleh algoritma lokal [Ranking] (otomatis menyusun ulang saat minatmu berubah). */
+    val recommendations: Flow<List<VideoItem>> =
+        combine(db.recs().pool(), db.signals().allFlow()) { pool, sigs -> Ranking.rank(pool, sigs) }
+            .flowOn(Dispatchers.Default)
+
+    private val bg = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // ---------- Minat (sinyal untuk algoritma) ----------
+
+    private suspend fun bump(name: String, delta: Double) {
+        val now = System.currentTimeMillis()
+        val old = db.signals().get(name)
+        val base = if (old == null) 0.0 else Ranking.decayed(old.weight, old.updatedAt, now)
+        db.signals().upsert(SignalEntity(name, (base + delta).coerceIn(-12.0, 12.0), now))
+    }
+
+    private suspend fun bumpVideo(channelUrl: String?, channel: String, title: String, chDelta: Double, kwDelta: Double) {
+        bump(Ranking.channelKey(channelUrl, channel), chDelta)
+        for (k in Ranking.keywords(title)) bump("kw:$k", kwDelta)
+    }
+
+    /**
+     * Catat seberapa lama sebuah video ditonton. Ditutup sebelum 10 detik = sinyal negatif ringan;
+     * makin lama / makin tuntas ditonton = makin positif.
+     */
+    fun noteWatch(info: StreamInfo, ratio: Double, watchedMs: Long) {
+        bg.launch {
+            try {
+                val (ch, kw) = when {
+                    watchedMs < 10_000 && ratio < 0.1 -> -1.0 to -0.5
+                    ratio < 0.5 -> 0.5 to 0.3
+                    ratio < 0.9 -> 1.5 to 0.8
+                    else -> 3.0 to 1.5
+                }
+                bumpVideo(info.uploaderUrl, info.uploaderName ?: "", info.name ?: "", ch, kw)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
         }
     }
+
+    /** Tindakan jelas: simpan/unduh/playlist (positif), "Tidak tertarik" (negatif). [strength] = kekuatan sinyal. */
+    fun noteAction(v: VideoItem, strength: Double) {
+        bg.launch {
+            try {
+                bumpVideo(v.channelUrl, v.channel, v.title, strength, strength * 0.5)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Sinyal untuk satu channel saja (misalnya "Jangan rekomendasikan channel"). */
+    fun noteChannel(channelUrl: String?, channel: String, strength: Double) {
+        bg.launch {
+            try {
+                bump(Ranking.channelKey(channelUrl, channel), strength)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Hapus semua minat yang sudah dipelajari (rekomendasi mulai dari nol). */
+    suspend fun resetSignals() = withContext(Dispatchers.IO) { db.signals().clear() }
 
     fun isSubscribed(channelUrl: String): Flow<Boolean> =
         db.subs().count(channelIdOf(channelUrl) ?: "-", channelUrl).map { it > 0 }
@@ -82,6 +147,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
     suspend fun subscribe(channelUrl: String, name: String, avatar: String?) = withContext(Dispatchers.IO) {
         val id = channelIdOf(channelUrl) ?: ChannelInfo.getInfo(yt, channelUrl).id
         db.subs().insert(SubscriptionEntity(id, name, channelUrl, avatar, System.currentTimeMillis()))
+        bump(Ranking.channelKey(channelUrl, name), 4.0)
     }
 
     suspend fun unsubscribe(channelUrl: String) = withContext(Dispatchers.IO) {
@@ -174,18 +240,34 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
      * ditambah topik acak, lalu disimpan sehingga langsung tampil di beranda.
      */
     suspend fun refreshRecommendations(): Int = withContext(Dispatchers.IO) {
-        val channels = db.history().recentChannels().shuffled().take(3)
+        val now = System.currentTimeMillis()
+        val sigs = db.signals().all().map { it to Ranking.decayed(it.weight, it.updatedAt, now) }
+        // Channel dan kata kunci yang paling kamu sukai saat ini.
+        val topChannels = sigs.filter { it.first.name.startsWith("ch:") && it.second > 0.8 }
+            .sortedByDescending { it.second }.take(2)
+            .mapNotNull { (s, _) ->
+                val rest = s.name.removePrefix("ch:")
+                if (rest.startsWith("http")) db.history().channelNameFor(rest) else rest
+            }
+        val topKeywords = sigs.filter { it.first.name.startsWith("kw:") && it.second > 0.8 }
+            .sortedByDescending { it.second }.map { it.first.name.removePrefix("kw:") }
+        val keywordQueries = topKeywords.chunked(2).take(2).map { it.joinToString(" ") }
+        val fallbackChannels =
+            if (topChannels.isEmpty() && keywordQueries.isEmpty()) db.history().recentChannels().shuffled().take(3)
+            else emptyList()
         val topics = listOf(
             "musik indonesia terbaru", "berita terkini hari ini", "video populer indonesia",
             "gameplay seru", "resep masakan", "review teknologi terbaru", "film pendek", "podcast indonesia"
         ).shuffled()
-        val queries = channels + topics.take(if (channels.isEmpty()) 3 else 1)
+        val known = topChannels.isNotEmpty() || keywordQueries.isNotEmpty() || fallbackChannels.isNotEmpty()
+        // Satu topik acak = jatah eksplorasi supaya Beranda tidak terjebak di satu selera.
+        val queries = (topChannels + keywordQueries + fallbackChannels + topics.take(if (known) 1 else 3)).distinct()
         val results = coroutineScope {
             queries.map { q ->
                 async { safe(emptyList<VideoItem>()) { search(q, false).videos.take(8) } }
             }.awaitAll()
         }
-        val merged = interleave(results).distinctBy { it.url }.take(30)
+        val merged = interleave(results).distinctBy { it.url }.take(40)
         if (merged.isNotEmpty()) {
             val now = System.currentTimeMillis()
             db.recs().insertAll(

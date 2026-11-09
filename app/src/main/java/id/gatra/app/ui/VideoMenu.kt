@@ -71,6 +71,7 @@ fun VideoMenuButton(v: VideoItem, modifier: Modifier = Modifier) {
                 scope.launch {
                     try {
                         app.library.addWatchLater(v)
+                        app.repo.noteAction(v, 3.0)
                         toast("Disimpan ke Tonton Nanti.")
                     } catch (e: CancellationException) {
                         throw e
@@ -85,11 +86,13 @@ fun VideoMenuButton(v: VideoItem, modifier: Modifier = Modifier) {
             MenuRow("Tidak tertarik") {
                 open = false
                 app.settings.hideVideo(v.url)
+                app.repo.noteAction(v, -4.0)
                 toast("Video ini tidak akan muncul di rekomendasi.")
             }
             MenuRow("Jangan rekomendasikan channel") {
                 open = false
                 app.settings.hideChannel(v.channelUrl ?: v.channel)
+                app.repo.noteChannel(v.channelUrl, v.channel, -8.0)
                 toast("Channel ini disembunyikan dari rekomendasi.")
             }
         }
