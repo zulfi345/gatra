@@ -109,55 +109,21 @@ fun GatraTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, typography = typography, shapes = shapes, content = content)
 }
 
-/**
- * Lambang Gatra untuk bar atas: bulatan biru berpusaran dengan huruf "G" krem di tengahnya.
- * Digambar langsung dengan kode (bukan gambar). Satuan gambar 46 x 46.
- */
+/** Lambang Gatra untuk bar atas: G biru (pusaran dan elang) dari logo, di dalam lingkaran putih. */
 @Composable
-fun GatraLogo(boxSize: Dp = 38.dp) {
-    Canvas(Modifier.size(boxSize)) {
-        val u = size.minDimension / 46f
-        drawCircle(
-            brush = Brush.linearGradient(
-                colors = listOf(G.BlueSoft, G.Blue, G.BlueDeep),
-                start = Offset(6f * u, 4f * u),
-                end = Offset(40f * u, 44f * u)
-            ),
-            radius = 22f * u,
-            center = Offset(23f * u, 23f * u)
-        )
-        // Garis pusaran tipis di dalam bulatan.
-        drawArc(
-            color = Color.White.copy(alpha = 0.40f), startAngle = 200f, sweepAngle = 120f, useCenter = false,
-            topLeft = Offset(4f * u, 4f * u), size = Size(38f * u, 38f * u),
-            style = Stroke(width = 1.4f * u, cap = StrokeCap.Round)
-        )
-        drawArc(
-            color = Color.White.copy(alpha = 0.35f), startAngle = 20f, sweepAngle = 110f, useCenter = false,
-            topLeft = Offset(6.5f * u, 6.5f * u), size = Size(33f * u, 33f * u),
-            style = Stroke(width = 1.2f * u, cap = StrokeCap.Round)
-        )
-        drawArc(
-            color = Color.White.copy(alpha = 0.25f), startAngle = 110f, sweepAngle = 80f, useCenter = false,
-            topLeft = Offset(2.5f * u, 2.5f * u), size = Size(41f * u, 41f * u),
-            style = Stroke(width = 1f * u, cap = StrokeCap.Round)
-        )
-        // Huruf G krem: cincin terbuka di kanan-atas + palang.
-        val cream = Color(0xFFF7EFD6)
-        drawArc(
-            color = cream, startAngle = -45f, sweepAngle = -305f, useCenter = false,
-            topLeft = Offset(13.5f * u, 13.5f * u), size = Size(19f * u, 19f * u),
-            style = Stroke(width = 5f * u, cap = StrokeCap.Butt)
-        )
-        drawRect(color = cream, topLeft = Offset(23.5f * u, 20.5f * u), size = Size(9f * u, 5f * u))
-    }
+fun GatraLogo(boxSize: Dp = 42.dp) {
+    Image(
+        painter = painterResource(R.drawable.logo_g),
+        contentDescription = "Gatra",
+        modifier = Modifier.size(boxSize).clip(CircleShape)
+    )
 }
 
 /** Logo di bar atas: lambang G, "GATRA" tebal miring emas-krem, "VIDEO" tipis abu-abu terang. */
 @Composable
 fun Wordmark() {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        GatraLogo(38.dp)
+        GatraLogo(42.dp)
         Spacer(Modifier.width(10.dp))
         Text(
             "GATRA",
