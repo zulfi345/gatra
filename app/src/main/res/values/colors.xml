@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="gatra_bg">#FF0A0E1A</color>
-    <color name="ic_launcher_bg">#FFFFFFFF</color>
+    <color name="gatra_bg">#FF0F1117</color>
+    <color name="ic_launcher_bg">#FF06102D</color>
 </resources>

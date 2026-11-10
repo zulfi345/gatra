@@ -1,5 +1,6 @@
 package id.gatra.app.ui
 
+import id.gatra.app.ui.theme.Wordmark
 import android.view.View
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -173,6 +174,8 @@ private fun ShortPage(
                 modifier = Modifier.align(Alignment.Center).size(72.dp)
             )
         }
+
+        Box(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 16.dp, top = 8.dp)) { Wordmark() }
 
         // Bayangan bawah supaya teks terbaca.
         Box(

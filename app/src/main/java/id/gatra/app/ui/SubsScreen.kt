@@ -1,5 +1,11 @@
 package id.gatra.app.ui
 
+import id.gatra.app.ui.theme.Wordmark
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.border
 import android.app.Application
 import android.net.Uri
 import android.widget.Toast
@@ -15,10 +21,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,6 +73,8 @@ class SubsViewModel(private val app: Application) : AndroidViewModel(app) {
         private set
     var loading by mutableStateOf(false)
         private set
+    var refreshing by mutableStateOf(false)
+        private set
     var message by mutableStateOf<String?>(null)
 
     init {
@@ -72,14 +84,17 @@ class SubsViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         viewModelScope.launch {
-            loading = true
+            loading = feed.isEmpty()
+            refreshing = true
             try {
                 feed = repo.feed()
+                launch { repo.backfillAvatars() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 message = friendlyError(e)
             }
+            refreshing = false
             loading = false
         }
     }
@@ -117,6 +132,7 @@ class SubsViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SubsScreen(
     onVideo: (String) -> Unit,
@@ -126,6 +142,9 @@ fun SubsScreen(
     val subs by vm.subs.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    var visible by remember { mutableIntStateOf(20) }
+    InfiniteScrollEffect(listState, enabled = visible < vm.feed.size) { visible += 20 }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         if (uri != null) vm.export(uri)
@@ -143,7 +162,7 @@ fun SubsScreen(
 
     Column(Modifier.fillMaxSize()) {
         GatraTopBar(
-            leading = { Text("Langganan", style = MaterialTheme.typography.titleLarge) },
+            leading = { Wordmark() },
             actions = {
                 IconButton(onClick = vm::refresh) { Icon(Icons.Default.Refresh, "Muat ulang", tint = G.Text) }
                 IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = G.Text) }
@@ -167,35 +186,47 @@ fun SubsScreen(
                     "Punya daftar dari Google Takeout? Impor berkas subscriptions.csv lewat menu titik tiga."
             )
         } else {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
-                item {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        items(subs) { s ->
-                            Column(
-                                Modifier.width(68.dp).clickable { onChannel(s.url) },
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                InitialAvatar(s.name, 56.dp, imageUrl = s.avatar)
-                                Text(
-                                    s.name, style = MaterialTheme.typography.bodySmall, color = G.Muted,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
+            PullToRefreshBox(
+                isRefreshing = vm.refreshing,
+                onRefresh = vm::refresh,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
+                    item { Text("Langganan", style = MaterialTheme.typography.titleLarge, fontSize = 32.sp, modifier = Modifier.padding(start = 16.dp, top = 4.dp)) }
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            items(subs) { s ->
+                                Column(
+                                    Modifier.width(72.dp).clickable { onChannel(s.url) },
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .size(64.dp)
+                                            .border(2.5.dp, G.Brand, CircleShape)
+                                            .padding(4.dp)
+                                    ) { InitialAvatar(s.name, 56.dp, imageUrl = s.avatar) }
+                                    Text(
+                                        s.name, style = MaterialTheme.typography.bodySmall, color = G.Muted,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                item { SectionTitle("Video terbaru") }
-                if (vm.loading && vm.feed.isEmpty()) {
-                    item { LoadingBox() }
-                } else if (vm.feed.isEmpty()) {
-                    item { EmptyState("Belum ada video baru", "Tarik tombol muat ulang di atas untuk memeriksa lagi.") }
-                } else {
-                    items(vm.feed) { v ->
-                        VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                    item { SectionTitle("Video terbaru") }
+                    if (vm.loading && vm.feed.isEmpty()) {
+                        item { LoadingBox() }
+                    } else if (vm.feed.isEmpty()) {
+                        item { EmptyState("Belum ada video baru", "Tarik layar ke bawah untuk memeriksa lagi.") }
+                    } else {
+                        items(vm.feed.take(visible)) { v ->
+                            VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                        }
                     }
                 }
             }

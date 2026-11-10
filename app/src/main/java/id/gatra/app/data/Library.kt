@@ -63,6 +63,11 @@ class AppSettings(context: Context) {
         get() = prefs.getString("audio_lang", "id") ?: "id"
         set(v) = prefs.edit().putString("audio_lang", v).apply()
 
+    /** Kode negara YouTube untuk rekomendasi (lihat [Regions]). */
+    var region: String
+        get() = prefs.getString("region", "ID") ?: "ID"
+        set(v) = prefs.edit().putString("region", v).apply()
+
     /** Unduhan hanya boleh berjalan lewat Wi-Fi / jaringan tak berbayar. */
     var wifiOnlyDownload: Boolean
         get() = prefs.getBoolean("wifi_only_download", true)

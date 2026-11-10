@@ -1,5 +1,14 @@
 package id.gatra.app.ui
 
+import id.gatra.app.ui.theme.Wordmark
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -42,6 +51,7 @@ fun shareVideo(context: Context, v: VideoItem) {
 }
 
 /** Tombol titik tiga di setiap video: antrean, simpan, unduh, bagikan, sembunyikan. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun VideoMenuButton(v: VideoItem, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
@@ -57,7 +67,13 @@ fun VideoMenuButton(v: VideoItem, modifier: Modifier = Modifier) {
         IconButton(onClick = { open = true }, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Default.MoreVert, "Opsi video", tint = G.Muted)
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        if (open) ModalBottomSheet(
+            onDismissRequest = { open = false },
+            containerColor = Color(0xFF1B1E26)
+        ) {
+            Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 24.dp)) {
+            Wordmark()
+            Text("Opsi Video", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
             MenuRow("Putar berikutnya dalam antrean") {
                 open = false
                 app.playback.playNext(v)
@@ -95,6 +111,7 @@ fun VideoMenuButton(v: VideoItem, modifier: Modifier = Modifier) {
                 app.repo.noteChannel(v.channelUrl, v.channel, -8.0)
                 toast("Channel ini disembunyikan dari rekomendasi.")
             }
+            }
         }
     }
 
@@ -104,5 +121,10 @@ fun VideoMenuButton(v: VideoItem, modifier: Modifier = Modifier) {
 
 @Composable
 private fun MenuRow(text: String, onClick: () -> Unit) {
-    DropdownMenuItem(text = { Text(text, color = G.Text) }, onClick = onClick)
+    Text(
+        text,
+        color = G.Text,
+        fontSize = 16.sp,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 15.dp)
+    )
 }

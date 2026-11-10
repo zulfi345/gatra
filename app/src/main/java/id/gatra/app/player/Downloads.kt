@@ -274,7 +274,7 @@ class DownloadService : Service() {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 } else {
-                    val nm = (getSystemService(android.content.Context.NOTIFICATION_SERVICE) as NotificationManager)
+                    val nm = getSystemService(NotificationManager::class.java)
                     nm.notify(NOTIF_ID, buildNotification(st))
                 }
             }
@@ -288,8 +288,7 @@ class DownloadService : Service() {
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < 26) return
-        val nm = (getSystemService(android.content.Context.NOTIFICATION_SERVICE) as NotificationManager)
+        val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL, "Unduhan video", NotificationManager.IMPORTANCE_LOW)

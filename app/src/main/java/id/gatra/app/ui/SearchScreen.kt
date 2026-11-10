@@ -1,5 +1,18 @@
 package id.gatra.app.ui
 
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import android.app.Application
 import android.content.Context
 import androidx.compose.foundation.clickable
@@ -12,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -58,6 +72,8 @@ import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
 class SearchViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = (app as GatraApp).repo
     private val prefs = app.getSharedPreferences("gatra", Context.MODE_PRIVATE)
+
+    val region get() = id.gatra.app.data.Regions.current
 
     var query by mutableStateOf("")
     var channelsMode by mutableStateOf(false)
@@ -156,12 +172,14 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 error = friendlyError(e)
+                hasMore = false
             }
             loadingMore = false
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SearchScreen(
     onBack: () -> Unit,
@@ -196,7 +214,10 @@ fun SearchScreen(
                     unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
                     cursorColor = G.Gold
                 ),
-                modifier = Modifier.weight(1f).focusRequester(requester)
+                modifier = Modifier
+                    .weight(1f)
+                    .border(1.5.dp, Brush.horizontalGradient(listOf(G.Cyan, G.Purple)), RoundedCornerShape(24.dp))
+                    .focusRequester(requester)
             )
             Box(Modifier.padding(end = 8.dp))
         }
@@ -210,11 +231,39 @@ fun SearchScreen(
             FilterChip(selected = vm.channelsMode, onClick = { vm.setMode(true) }, label = { Text("Channel") }, colors = colors)
         }
 
-        LazyColumn(Modifier.fillMaxSize()) {
+        val listState = rememberLazyListState()
+        InfiniteScrollEffect(
+            listState,
+            enabled = vm.searched && vm.hasMore && !vm.loading && !vm.loadingMore,
+            onLoadMore = vm::loadMore
+        )
+        LazyColumn(Modifier.fillMaxSize(), state = listState) {
             when {
                 vm.loading -> item { LoadingBox() }
                 vm.error != null && !vm.searched -> item { ErrorBox(vm.error ?: "") { vm.submit() } }
                 !vm.searched -> {
+                    item {
+                        val r = vm.region
+                        Text(
+                            "Sedang tren ${r.flag} ${r.name}",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp)
+                        )
+                        r.queries.forEachIndexed { i, q ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable { vm.useRecent(q); focus.clearFocus() }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    Modifier.size(34.dp).clip(CircleShape).background(G.SurfaceHigh),
+                                    contentAlignment = Alignment.Center
+                                ) { Text("${i + 1}", color = G.Muted, fontWeight = FontWeight.SemiBold) }
+                                Spacer(Modifier.width(14.dp))
+                                Text(q, color = G.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
                     if (vm.recent.isNotEmpty()) {
                         item {
                             Row(
@@ -225,15 +274,23 @@ fun SearchScreen(
                                 TextButton(onClick = vm::clearRecent) { Text("Hapus semua", color = G.Gold) }
                             }
                         }
-                        items(vm.recent) { q ->
-                            Text(
-                                q,
-                                modifier = Modifier.fillMaxWidth().clickable { vm.useRecent(q); focus.clearFocus() }
-                                    .padding(horizontal = 16.dp, vertical = 14.dp)
-                            )
+                        item {
+                            FlowRow(
+                                Modifier.padding(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                vm.recent.forEach { q ->
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(50))
+                                            .background(G.SurfaceHigh)
+                                            .clickable { vm.useRecent(q); focus.clearFocus() }
+                                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                                    ) { Text(q, color = G.Text, fontSize = 14.sp) }
+                                }
+                            }
                         }
-                    } else {
-                        item { EmptyState("Cari video atau channel", "Ketik kata kunci lalu tekan cari di keyboard.") }
                     }
                 }
                 else -> {
@@ -246,16 +303,7 @@ fun SearchScreen(
                         items(vm.videos) { v ->
                             CompactVideoRow(v, onClick = { onVideo(v.url) })
                         }
-                        if (vm.hasMore) {
-                            item {
-                                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                    if (vm.loadingMore) LoadingBox() else Button(
-                                        onClick = vm::loadMore,
-                                        colors = ButtonDefaults.buttonColors(containerColor = G.SurfaceHigh, contentColor = G.Gold)
-                                    ) { Text("Muat lebih banyak") }
-                                }
-                            }
-                        }
+                        if (vm.loadingMore) item { LoadMoreSpinner() }
                     }
                 }
             }

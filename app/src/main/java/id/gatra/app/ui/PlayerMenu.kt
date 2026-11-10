@@ -1,5 +1,10 @@
 package id.gatra.app.ui
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -40,12 +45,23 @@ fun QualityMenu(st: PlayerState, playback: PlaybackController, modifier: Modifie
     var open by remember { mutableStateOf(false) }
 
     Box(modifier) {
-        IconButton(
-            onClick = { open = true },
-            modifier = Modifier.background(Color(0x66000000), CircleShape)
-        ) {
-            Icon(Icons.Default.Settings, "Kualitas video", tint = Color.White)
+        val cur = st.qualities.firstOrNull { it.height == st.selectedHeight }?.label
+            ?: if (st.selectedHeight > 0) "${st.selectedHeight}p" else ""
+        val label = when {
+            st.smooth -> "720p"
+            st.auto -> if (cur.isEmpty()) "Auto" else "Auto • $cur"
+            else -> cur.ifEmpty { "Auto" }
         }
+        Text(
+            label,
+            color = Color.White,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .background(Color(0x66000000), RoundedCornerShape(50))
+                .clickable { open = true }
+                .padding(horizontal = 14.dp, vertical = 9.dp)
+        )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             Item("Otomatis (sesuai internet)", st.auto && !st.smooth) {
                 open = false

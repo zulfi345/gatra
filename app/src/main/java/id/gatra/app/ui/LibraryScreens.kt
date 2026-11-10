@@ -1,5 +1,16 @@
 package id.gatra.app.ui
 
+import id.gatra.app.ui.theme.Wordmark
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -100,29 +111,127 @@ fun LibraryScreen(
     onWatchLater: () -> Unit,
     onPlaylists: () -> Unit,
     onDownloads: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onHistory: () -> Unit,
+    onVideo: (String) -> Unit
 ) {
     val app = appOf()
     val later by app.library.watchLater.collectAsStateWithLifecycle(emptyList())
     val lists by app.library.playlists.collectAsStateWithLifecycle(emptyList())
     val dls by app.library.downloads.collectAsStateWithLifecycle(emptyList())
+    val hist by app.repo.history.collectAsStateWithLifecycle(emptyList())
+    val done = dls.filter { it.status == DL_DONE }
+    val dlBytes = done.sumOf { it.totalBytes }
+    val usedFrac = remember(dlBytes) {
+        try {
+            val st = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+            val total = st.totalBytes.toFloat()
+            if (total > 0f) ((total - st.availableBytes) / total).coerceIn(0.02f, 1f) else 0.02f
+        } catch (e: Exception) {
+            0.02f
+        }
+    }
+    val card = RoundedCornerShape(22.dp)
 
-    Column(Modifier.fillMaxSize()) {
-        GatraTopBar(leading = { Text("Koleksi", style = MaterialTheme.typography.titleLarge) })
-        LibRow("Tonton nanti", "${later.size} video", onWatchLater)
-        LibRow("Playlist", "${lists.size} playlist", onPlaylists)
-        LibRow("Unduhan", "${dls.count { it.status == DL_DONE }} video tersimpan di HP", onDownloads)
-        LibRow("Pengaturan", "Putar otomatis, hemat data, SponsorBlock, cache", onSettings)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item { GatraTopBar(leading = { Wordmark() }) }
+        item { Text("Koleksi", style = MaterialTheme.typography.titleLarge, fontSize = 32.sp, modifier = Modifier.padding(start = 20.dp, bottom = 12.dp)) }
+
+        // Kartu unduhan dengan batang pemakaian penyimpanan
+        item {
+            Column(
+                Modifier
+                    .padding(horizontal = 16.dp)
+                    .fillMaxWidth()
+                    .clip(card)
+                    .background(Brush.linearGradient(listOf(Color(0xFF3A2A5E), Color(0xFF1E3A4C))))
+                    .border(1.dp, Color(0x40FFFFFF), card)
+                    .clickable(onClick = onDownloads)
+                    .padding(18.dp)
+            ) {
+                Text("Unduhan", style = MaterialTheme.typography.titleMedium, fontSize = 20.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("${done.size} video tersimpan \u2022 ${mb(dlBytes)}", color = G.Muted, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(12.dp))
+                Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(Color(0x33FFFFFF))) {
+                    Box(Modifier.fillMaxWidth(usedFrac).height(8.dp).clip(RoundedCornerShape(50)).background(G.Brand))
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("Penyimpanan HP terpakai ${(usedFrac * 100).toInt()}%", color = G.Muted, fontSize = 12.sp)
+            }
+        }
+
+        // Dua kotak: Tonton nanti dan Playlist
+        item {
+            Row(
+                Modifier.padding(16.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                LibTile("Tonton Nanti", "${later.size} video", G.Cyan, onWatchLater, Modifier.weight(1f))
+                LibTile("Playlist", "${lists.size} playlist", G.Pink, onPlaylists, Modifier.weight(1f))
+            }
+        }
+
+        // Riwayat terbaru
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Riwayat", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("Lihat semua", color = G.Muted, modifier = Modifier.clickable(onClick = onHistory))
+            }
+        }
+        item {
+            if (hist.isEmpty()) {
+                Text("Belum ada video yang ditonton.", color = G.Muted, modifier = Modifier.padding(horizontal = 20.dp))
+            } else {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(hist.take(12), key = { it.url }) { h ->
+                        Column(Modifier.width(170.dp).clickable { onVideo(h.url) }) {
+                            Thumb(h.thumbnail, h.duration, false, Modifier.fillMaxWidth().aspectRatio(16f / 9f), corner = 14.dp)
+                            Text(
+                                h.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 6.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Spacer(Modifier.height(12.dp))
+            LibRow("Pengaturan", "Putar otomatis, hemat data, SponsorBlock, cache", onSettings)
+        }
+    }
+}
+
+@Composable
+private fun LibTile(title: String, subtitle: String, accent: Color, onClick: () -> Unit, modifier: Modifier) {
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        modifier
+            .clip(shape)
+            .background(G.Surface)
+            .border(1.5.dp, accent, shape)
+            .clickable(onClick = onClick)
+            .padding(16.dp)
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(2.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = G.Muted)
     }
 }
 
 @Composable
 private fun LibRow(title: String, subtitle: String, onClick: () -> Unit) {
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp)) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 14.dp)) {
         Text(title, style = MaterialTheme.typography.titleMedium)
         Text(subtitle, style = MaterialTheme.typography.bodySmall, color = G.Muted)
     }
-    HorizontalDivider(color = G.Outline)
 }
 
 // ---------------------------------------------------------------- Tonton nanti
@@ -406,7 +515,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     app.playback.clearCache()
                     cacheBytes = app.playback.cacheBytes()
                 }
-                LibRow("Hapus riwayat tontonan", "Menghapus semua daftar di tab Riwayat") { confirmHistory = true }
+                LibRow("Hapus riwayat tontonan", "Menghapus semua daftar di Riwayat") { confirmHistory = true }
                 LibRow("Tentang Gatra", "Versi 1.0.0 • Untuk Indonesia Maju") {}
             }
         }
