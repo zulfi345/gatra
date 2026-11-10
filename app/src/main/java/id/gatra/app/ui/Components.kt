@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -32,6 +33,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.platform.LocalContext
@@ -305,5 +311,38 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
         Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(body, color = G.Muted, textAlign = TextAlign.Center)
+    }
+}
+
+/**
+ * Gulir tanpa batas: memanggil [onLoadMore] saat daftar hampir habis dan [enabled] bernilai true.
+ * Setelah satu muatan selesai dan layar masih dekat ujung, dipanggil lagi otomatis.
+ */
+@Composable
+fun InfiniteScrollEffect(
+    state: LazyListState,
+    enabled: Boolean,
+    buffer: Int = 4,
+    onLoadMore: () -> Unit
+) {
+    val load by rememberUpdatedState(onLoadMore)
+    val canLoad by rememberUpdatedState(enabled)
+    LaunchedEffect(state) {
+        snapshotFlow {
+            val info = state.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount > 0 && last >= info.totalItemsCount - 1 - buffer && canLoad
+        }
+            .distinctUntilChanged()
+            .filter { it }
+            .collect { load() }
+    }
+}
+
+/** Indikator kecil di dasar daftar saat halaman berikutnya sedang dimuat. */
+@Composable
+fun LoadMoreSpinner() {
+    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(color = G.Gold, modifier = Modifier.size(26.dp), strokeWidth = 3.dp)
     }
 }

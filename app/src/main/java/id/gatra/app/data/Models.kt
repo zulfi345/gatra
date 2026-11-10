@@ -152,3 +152,21 @@ fun friendlyError(e: Throwable): String = when {
         "YouTube sedang membatasi permintaan. Tunggu beberapa menit lalu coba lagi."
     else -> "Terjadi masalah: ${e.message ?: e.javaClass.simpleName}"
 }
+
+/** Playlist milik channel di YouTube (bukan playlist lokal di HP). */
+data class YtPlaylist(
+    val url: String,
+    val title: String,
+    val thumb: String?,
+    val count: Long,
+    val uploader: String
+)
+
+fun org.schabi.newpipe.extractor.playlist.PlaylistInfoItem.toYtPlaylist(): YtPlaylist =
+    YtPlaylist(
+        url = url,
+        title = name ?: "",
+        thumb = thumbnails?.bestUrl(),
+        count = streamCount,
+        uploader = uploaderName ?: ""
+    )

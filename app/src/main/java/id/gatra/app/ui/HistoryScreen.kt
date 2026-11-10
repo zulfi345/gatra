@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -16,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,6 +55,9 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 fun HistoryScreen(onVideo: (String) -> Unit, vm: HistoryViewModel = viewModel()) {
     val items by vm.items.collectAsStateWithLifecycle()
     var confirm by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    var visible by remember { mutableIntStateOf(40) }
+    InfiniteScrollEffect(listState, enabled = visible < items.size) { visible += 40 }
 
     Column(Modifier.fillMaxSize()) {
         GatraTopBar(
@@ -68,8 +73,8 @@ fun HistoryScreen(onVideo: (String) -> Unit, vm: HistoryViewModel = viewModel())
         if (items.isEmpty()) {
             EmptyState("Riwayat masih kosong", "Video yang kamu tonton akan muncul di sini. Riwayat hanya tersimpan di HP ini.")
         } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(items, key = { it.url }) { h ->
+            LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                items(items.take(visible), key = { it.url }) { h ->
                     val v = VideoItem(
                         url = h.url, title = h.title, channel = h.channel,
                         channelUrl = h.channelUrl.ifBlank { null }, thumb = h.thumbnail,

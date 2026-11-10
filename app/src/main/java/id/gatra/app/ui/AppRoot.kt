@@ -62,6 +62,7 @@ private const val PLAYLIST = "playlist/{id}"
 private const val DOWNLOADS = "downloads"
 private const val SETTINGS = "settings"
 private const val CHANNEL = "channel?url={url}"
+private const val YT_PLAYLIST = "ytplaylist?url={url}"
 
 @Composable
 fun GatraRoot(playback: PlaybackController, repo: Repo) {
@@ -75,6 +76,10 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
     val openChannel: (String) -> Unit = { url ->
         playback.minimize()
         nav.navigate("channel?url=${Uri.encode(url)}")
+    }
+
+    val openYtPlaylist: (String) -> Unit = { url ->
+        nav.navigate("ytplaylist?url=${Uri.encode(url)}")
     }
 
     BackHandler(enabled = player.active && player.expanded) { playback.minimize() }
@@ -143,7 +148,21 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
                 }
                 composable(CHANNEL, arguments = listOf(navArgument("url") { type = NavType.StringType })) { e ->
                     val url = Uri.decode(e.arguments?.getString("url").orEmpty())
-                    ChannelScreen(url = url, onBack = { nav.popBackStack() }, onVideo = openVideo)
+                    ChannelScreen(
+                        url = url,
+                        onBack = { nav.popBackStack() },
+                        onVideo = openVideo,
+                        onPlaylist = openYtPlaylist
+                    )
+                }
+                composable(YT_PLAYLIST, arguments = listOf(navArgument("url") { type = NavType.StringType })) { e ->
+                    val url = Uri.decode(e.arguments?.getString("url").orEmpty())
+                    YtPlaylistScreen(
+                        url = url,
+                        onBack = { nav.popBackStack() },
+                        onVideo = openVideo,
+                        onPlayAll = playback::playAll
+                    )
                 }
             }
         }

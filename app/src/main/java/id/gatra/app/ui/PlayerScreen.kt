@@ -27,6 +27,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -70,6 +71,7 @@ import androidx.media3.ui.PlayerView
 import id.gatra.app.GatraApp
 import id.gatra.app.data.toVideoItem
 import id.gatra.app.data.Repo
+import id.gatra.app.data.VideoCursor
 import id.gatra.app.data.VideoItem
 import id.gatra.app.data.bestUrl
 import id.gatra.app.data.compactCount
@@ -101,6 +103,7 @@ fun PlayerScreen(
     val fullscreen = landscape || manualFullscreen
     var hud by remember { mutableStateOf<String?>(null) }
     var controlsVisible by remember { mutableStateOf(true) }
+    var showSettings by remember { mutableStateOf(false) }
     LaunchedEffect(hud) {
         if (hud != null) {
             delay(900)
@@ -205,6 +208,10 @@ fun PlayerScreen(
                             PlayerView.ControllerVisibilityListener { v -> controlsVisible = (v == View.VISIBLE) }
                         )
                         setFullscreenButtonClickListener { toggleFullscreen.value() }
+                        // Gir di bilah kontrol bawah membuka menu pengaturan lengkap milik Gatra.
+                        findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.setOnClickListener {
+                            showSettings = true
+                        }
                         installGestures(this, activity, playback.player) { hud = it }
                     }
                 },
@@ -269,8 +276,15 @@ fun PlayerScreen(
                         modifier = Modifier.align(Alignment.TopStart)
                     ) { Icon(Icons.Default.KeyboardArrowDown, "Kecilkan", tint = Color.White) }
                 }
-                PlayerMenu(st, playback, Modifier.align(Alignment.TopEnd).padding(8.dp))
+                QualityMenu(st, playback, Modifier.align(Alignment.TopEnd).padding(8.dp))
             }
+            PlayerSettingsMenu(
+                st = st,
+                playback = playback,
+                open = showSettings && !inPip,
+                onDismiss = { showSettings = false },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 52.dp, bottom = 44.dp)
+            )
         }
 
         if (!immersive) {
@@ -323,7 +337,33 @@ private fun PlayerDetails(
     var descExpanded by remember(info) { mutableStateOf(false) }
     val description = remember(info) { plainDescription(info.description) }
 
-    LazyColumn(modifier.fillMaxWidth()) {
+    // Video terkait tanpa batas: setelah daftar bawaan habis, lanjut dari pencarian berdasarkan judul.
+    val listState = rememberLazyListState()
+    val cursor = remember(info) { VideoCursor(repo, (info.name ?: "").take(80)) }
+    var extra by remember(info) { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var extraLoading by remember(info) { mutableStateOf(false) }
+    var extraMore by remember(info) { mutableStateOf(cursor.query.isNotBlank()) }
+    InfiniteScrollEffect(listState, enabled = extraMore && !extraLoading && related.isNotEmpty()) {
+        scope.launch {
+            extraLoading = true
+            try {
+                val have = HashSet<String>()
+                have += related.map { it.url }
+                have += extra.map { it.url }
+                have += (info.url ?: "")
+                val fresh = cursor.next().filter { have.add(it.url) }
+                extra = extra + fresh
+                if (fresh.isEmpty() && !cursor.hasMore) extraMore = false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                extraMore = false
+            }
+            extraLoading = false
+        }
+    }
+
+    LazyColumn(modifier.fillMaxWidth(), state = listState) {
         item {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                 Text(info.name ?: "", style = MaterialTheme.typography.titleLarge)
@@ -439,6 +479,8 @@ private fun PlayerDetails(
                 // Tombol titik tiga (antrean, simpan, unduh, bagikan) muncul otomatis di setiap baris.
                 CompactVideoRow(v, onClick = { playback.open(v.url) })
             }
+            items(extra) { v -> CompactVideoRow(v, onClick = { playback.open(v.url) }) }
+            if (extraLoading) item { LoadMoreSpinner() }
         }
     }
 }

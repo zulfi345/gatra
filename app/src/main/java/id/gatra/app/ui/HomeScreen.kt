@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.gatra.app.GatraApp
+import id.gatra.app.data.VideoCursor
 import id.gatra.app.data.VideoItem
 import id.gatra.app.data.friendlyError
 import id.gatra.app.ui.theme.G
@@ -78,6 +79,55 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private val cache = HashMap<Int, List<VideoItem>>()
 
+    // ---- Gulir tanpa batas ----
+    /** Video tambahan di bawah rekomendasi (Untukmu), terus bertambah saat daftar digulir. */
+    var more by mutableStateOf<List<VideoItem>>(emptyList())
+        private set
+    var loadingMore by mutableStateOf(false)
+        private set
+    private var homeHasMore by mutableStateOf(true)
+    private var catHasMore by mutableStateOf(true)
+    private var exploreCursors: List<VideoCursor> = emptyList()
+    private val catCursors = HashMap<Int, VideoCursor>()
+
+    /** True bila masih ada halaman berikutnya untuk tab yang sedang dibuka. */
+    val canLoadMore: Boolean
+        get() = !loading && !refreshing && !loadingMore && (if (selected == 0) homeHasMore else catHasMore)
+
+    fun loadMore() {
+        if (!canLoadMore) return
+        val index = selected
+        viewModelScope.launch {
+            loadingMore = true
+            try {
+                if (index == 0) {
+                    if (exploreCursors.isEmpty()) exploreCursors = repo.exploreCursors()
+                    val known = HashSet<String>()
+                    known += feed.map { it.url }
+                    known += recs.value.map { it.url }
+                    known += more.map { it.url }
+                    val fresh = repo.exploreNext(exploreCursors, known)
+                    more = more + fresh
+                    if (fresh.isEmpty()) homeHasMore = false
+                } else {
+                    val cursor = catCursors[index]
+                    val fresh = cursor?.next().orEmpty()
+                    if (selected == index) {
+                        val have = catItems.map { it.url }.toSet()
+                        catItems = catItems + fresh.filter { it.url !in have }
+                        cache[index] = catItems
+                        catHasMore = fresh.isNotEmpty() && cursor?.hasMore == true
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (index == 0) homeHasMore = false else catHasMore = false
+            }
+            loadingMore = false
+        }
+    }
+
     init {
         viewModelScope.launch {
             loading = true
@@ -94,6 +144,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             refreshing = true
             error = null
             cache.clear()
+            more = emptyList()
+            exploreCursors = emptyList()
+            catCursors.clear()
+            homeHasMore = true
+            catHasMore = true
             if (index == 0) loadHome(force = true) else loadCategory(index)
             refreshing = false
             loading = false
@@ -104,7 +159,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         selected = i
         error = null
         if (i == 0) return
-        cache[i]?.let { catItems = it; return }
+        cache[i]?.let {
+            catItems = it
+            catHasMore = catCursors[i]?.hasMore ?: false
+            return
+        }
+        catHasMore = true
         catItems = emptyList()
         viewModelScope.launch {
             loading = true
@@ -132,10 +192,15 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadCategory(i: Int) {
         val q = queries[i] ?: return
+        val cursor = VideoCursor(repo, q)
+        catCursors[i] = cursor
         try {
-            val r = repo.search(q, false).videos
+            val r = cursor.next()
             cache[i] = r
-            if (selected == i) catItems = r
+            if (selected == i) {
+                catItems = r
+                catHasMore = cursor.hasMore
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -195,6 +260,8 @@ fun HomeScreen(
         }
     }
 
+    InfiniteScrollEffect(listState, enabled = vm.canLoadMore, onLoadMore = vm::loadMore)
+
     val appCtx = LocalContext.current.applicationContext as GatraApp
     val hiddenVideos by appCtx.settings.hiddenVideos.collectAsStateWithLifecycle()
     val hiddenChannels by appCtx.settings.hiddenChannels.collectAsStateWithLifecycle()
@@ -233,6 +300,13 @@ fun HomeScreen(
                             VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
                         }
                     }
+                    val moreList = vm.more.filter { keep(it) && it.url !in feedUrls }
+                    if (moreList.isNotEmpty()) {
+                        item { SectionTitle("Jelajahi lainnya") }
+                        itemsIndexed(moreList) { _, v ->
+                            VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
+                        }
+                    }
                     if (feedTop.isEmpty() && recList.isEmpty()) {
                         when {
                             vm.loading -> item { LoadingBox() }
@@ -254,6 +328,7 @@ fun HomeScreen(
                         }
                     }
                 }
+                if (vm.loadingMore) item { LoadMoreSpinner() }
             }
         }
     }

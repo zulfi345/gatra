@@ -26,6 +26,8 @@ import org.schabi.newpipe.extractor.channel.ChannelInfoItem
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler
 import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
@@ -49,10 +51,47 @@ class ChannelPage(
     val description: String?,
     val videos: List<VideoItem>,
     val tab: ListLinkHandler?,
-    val next: Page?
+    val next: Page?,
+    val liveTab: ListLinkHandler? = null,
+    val playlistTab: ListLinkHandler? = null
 )
 
 class MoreVideos(val videos: List<VideoItem>, val next: Page?)
+
+/** Satu halaman isi tab channel: video/live atau playlist, tergantung tab-nya. */
+class TabPage(val videos: List<VideoItem>, val playlists: List<YtPlaylist>, val next: Page?)
+
+class PlaylistPage(
+    val title: String,
+    val uploader: String,
+    val count: Long,
+    val thumb: String?,
+    val videos: List<VideoItem>,
+    val next: Page?
+)
+
+/**
+ * Pembaca hasil pencarian bertahap untuk gulir tanpa batas: panggil [next] berulang,
+ * tiap panggilan mengambil halaman hasil berikutnya.
+ */
+class VideoCursor(private val repo: Repo, val query: String) {
+    private var handler: SearchQueryHandler? = null
+    private var nextPage: Page? = null
+    private var started = false
+
+    val hasMore: Boolean get() = !started || nextPage != null
+
+    suspend fun next(): List<VideoItem> {
+        if (!hasMore) return emptyList()
+        val h = handler
+        val n = nextPage
+        val page = if (!started || h == null || n == null) repo.search(query, false) else repo.moreSearch(h, n)
+        started = true
+        handler = page.handler
+        nextPage = page.next
+        return page.videos
+    }
+}
 
 private inline fun <T> safe(default: T, block: () -> T): T =
     try {
@@ -235,11 +274,8 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         }
     }
 
-    /**
-     * Ambil video segar untuk "Rekomendasi untukmu": dicari dari channel yang sering kamu tonton
-     * ditambah topik acak, lalu disimpan sehingga langsung tampil di beranda.
-     */
-    suspend fun refreshRecommendations(): Int = withContext(Dispatchers.IO) {
+    /** Susun daftar kueri pencarian dari minat yang dipelajari (atau topik acak bila belum ada). */
+    private suspend fun buildQueries(): List<String> {
         val now = System.currentTimeMillis()
         val sigs = db.signals().all().map { it to Ranking.decayed(it.weight, it.updatedAt, now) }
         // Channel dan kata kunci yang paling kamu sukai saat ini.
@@ -261,7 +297,15 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         ).shuffled()
         val known = topChannels.isNotEmpty() || keywordQueries.isNotEmpty() || fallbackChannels.isNotEmpty()
         // Satu topik acak = jatah eksplorasi supaya Beranda tidak terjebak di satu selera.
-        val queries = (topChannels + keywordQueries + fallbackChannels + topics.take(if (known) 1 else 3)).distinct()
+        return (topChannels + keywordQueries + fallbackChannels + topics.take(if (known) 1 else 3)).distinct()
+    }
+
+    /**
+     * Ambil video segar untuk "Rekomendasi untukmu": dicari dari channel yang sering kamu tonton
+     * ditambah topik acak, lalu disimpan sehingga langsung tampil di beranda.
+     */
+    suspend fun refreshRecommendations(): Int = withContext(Dispatchers.IO) {
+        val queries = buildQueries()
         val results = coroutineScope {
             queries.map { q ->
                 async { safe(emptyList<VideoItem>()) { search(q, false).videos.take(8) } }
@@ -320,7 +364,9 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         ChannelPage(
             id = info.id, name = info.name ?: "", url = info.url ?: url,
             avatar = info.avatars.bestUrl(), subscribers = info.subscriberCount,
-            description = info.description, videos = videos, tab = tab, next = next
+            description = info.description, videos = videos, tab = tab, next = next,
+            liveTab = info.tabs.firstOrNull { it.contentFilters.contains("livestreams") },
+            playlistTab = info.tabs.firstOrNull { it.contentFilters.contains("playlists") }
         )
     }
 
@@ -335,6 +381,71 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
             )
         }
 
+    /** Halaman pertama sebuah tab channel (Video, Live, atau Playlist). */
+    suspend fun tabFirst(tab: ListLinkHandler, name: String, url: String, avatar: String?): TabPage =
+        withContext(Dispatchers.IO) {
+            val ti = ChannelTabInfo.getInfo(yt, tab)
+            toTabPage(ti.relatedItems, name, url, avatar, if (ti.hasNextPage()) ti.nextPage else null)
+        }
+
+    suspend fun tabMore(tab: ListLinkHandler, page: Page, name: String, url: String, avatar: String?): TabPage =
+        withContext(Dispatchers.IO) {
+            val p = ChannelTabInfo.getMoreItems(yt, tab, page)
+            toTabPage(p.items, name, url, avatar, if (p.hasNextPage()) p.nextPage else null)
+        }
+
+    private fun toTabPage(items: List<InfoItem>, name: String, url: String, avatar: String?, next: Page?): TabPage =
+        TabPage(
+            items.filterIsInstance<StreamInfoItem>().map { it.toVideo(name, url, avatar) },
+            items.filterIsInstance<PlaylistInfoItem>().map { it.toYtPlaylist() },
+            next
+        )
+
+    // ---------- Playlist YouTube ----------
+
+    suspend fun playlist(url: String): PlaylistPage = withContext(Dispatchers.IO) {
+        val info = PlaylistInfo.getInfo(yt, url)
+        PlaylistPage(
+            title = info.name ?: "",
+            uploader = info.uploaderName ?: "",
+            count = info.streamCount,
+            thumb = info.thumbnails?.bestUrl(),
+            videos = info.relatedItems.filterIsInstance<StreamInfoItem>()
+                .map { it.toVideo(info.uploaderName, info.uploaderUrl) },
+            next = if (info.hasNextPage()) info.nextPage else null
+        )
+    }
+
+    suspend fun morePlaylist(url: String, page: Page): MoreVideos = withContext(Dispatchers.IO) {
+        val p = PlaylistInfo.getMoreItems(yt, url, page)
+        MoreVideos(
+            p.items.filterIsInstance<StreamInfoItem>().map { it.toVideo() },
+            if (p.hasNextPage()) p.nextPage else null
+        )
+    }
+
+    // ---------- Gulir tanpa batas di Beranda ----------
+
+    /** Pembaca bertahap untuk topik/channel/kata kunci yang cocok dengan minatmu. */
+    suspend fun exploreCursors(): List<VideoCursor> = buildQueries().map { VideoCursor(this, it) }
+
+    /** Ambil halaman berikutnya dari semua pembaca; hanya video yang belum ada di [known]. */
+    suspend fun exploreNext(cursors: List<VideoCursor>, known: Set<String>): List<VideoItem> =
+        withContext(Dispatchers.IO) {
+            val out = ArrayList<VideoItem>()
+            val seen = HashSet<String>(known)
+            repeat(3) {
+                if (out.size >= 12) return@repeat
+                val active = cursors.filter { it.hasMore }
+                if (active.isEmpty()) return@repeat
+                val pages = coroutineScope {
+                    active.map { c -> async { safe(emptyList<VideoItem>()) { c.next() } } }.awaitAll()
+                }
+                for (v in interleave(pages)) if (seen.add(v.url)) out += v
+            }
+            out
+        }
+
     // ---------- Beranda: feed langganan (RSS resmi YouTube) ----------
 
     suspend fun feed(): List<VideoItem> = withContext(Dispatchers.IO) {
@@ -345,7 +456,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
             subs.map { s -> async { gate.withPermit { safe<List<VideoItem>>(emptyList()) { fetchRss(s) } } } }
                 .awaitAll()
                 .flatten()
-        }.sortedByDescending { it.publishedMs }.take(60)
+        }.sortedByDescending { it.publishedMs }.take(400)
     }
 
     /** Dipakai saat belum ada riwayat dan langganan: campuran beberapa topik populer. */

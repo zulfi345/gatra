@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
@@ -29,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -134,6 +136,9 @@ fun SubsScreen(
     val subs by vm.subs.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    var visible by remember { mutableIntStateOf(20) }
+    InfiniteScrollEffect(listState, enabled = visible < vm.feed.size) { visible += 20 }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         if (uri != null) vm.export(uri)
@@ -180,7 +185,7 @@ fun SubsScreen(
                 onRefresh = vm::refresh,
                 modifier = Modifier.fillMaxSize()
             ) {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
                     item {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -207,7 +212,7 @@ fun SubsScreen(
                     } else if (vm.feed.isEmpty()) {
                         item { EmptyState("Belum ada video baru", "Tarik layar ke bawah untuk memeriksa lagi.") }
                     } else {
-                        items(vm.feed) { v ->
+                        items(vm.feed.take(visible)) { v ->
                             VideoCard(v, { onVideo(v.url) }, v.channelUrl?.let { u -> { onChannel(u) } })
                         }
                     }
