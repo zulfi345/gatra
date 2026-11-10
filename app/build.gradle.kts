@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "id.gatra.app"
-        minSdk = 26
+        minSdk = 21
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
@@ -23,6 +23,8 @@ android {
             storePassword = "gatra2026"
             keyAlias = "gatra"
             keyPassword = "gatra2026"
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
