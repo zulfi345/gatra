@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -33,15 +32,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.distinctUntilChanged
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
-import androidx.compose.ui.platform.LocalContext
-import id.gatra.app.GatraApp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,7 +82,6 @@ fun GatraTopBar(
     }
 }
 
-/** Foto profil bulat. Huruf awal selalu ada di bawahnya sebagai cadangan selama foto dimuat. */
 @Composable
 fun InitialAvatar(name: String, size: Dp, modifier: Modifier = Modifier, imageUrl: String? = null) {
     Box(
@@ -102,12 +91,6 @@ fun InitialAvatar(name: String, size: Dp, modifier: Modifier = Modifier, imageUr
             .background(Brush.linearGradient(listOf(G.BlueDeep, G.Blue))),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            name.trim().firstOrNull()?.uppercase() ?: "?",
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            fontSize = (size.value * 0.42f).sp
-        )
         if (imageUrl != null) {
             AsyncImage(
                 model = imageUrl,
@@ -115,23 +98,15 @@ fun InitialAvatar(name: String, size: Dp, modifier: Modifier = Modifier, imageUr
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
+        } else {
+            Text(
+                name.trim().firstOrNull()?.uppercase() ?: "?",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = (size.value * 0.42f).sp
+            )
         }
     }
-}
-
-/** Foto profil channel pemilik video: dari data video, atau diambil dari halaman channel bila belum ada. */
-@Composable
-fun rememberAvatar(v: VideoItem): String? {
-    val app = LocalContext.current.applicationContext as GatraApp
-    val channelUrl = v.channelUrl
-    val avatar by produceState<String?>(v.avatar, v.avatar, channelUrl) {
-        if (v.avatar != null) {
-            value = v.avatar
-        } else if (!channelUrl.isNullOrBlank()) {
-            value = app.repo.avatarFor(channelUrl)
-        }
-    }
-    return avatar
 }
 
 @Composable
@@ -178,8 +153,7 @@ fun VideoCard(v: VideoItem, onClick: () -> Unit, onChannel: (() -> Unit)? = null
         Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             InitialAvatar(
                 v.channel, 36.dp,
-                Modifier.clickable(enabled = onChannel != null) { onChannel?.invoke() },
-                imageUrl = rememberAvatar(v)
+                Modifier.clickable(enabled = onChannel != null) { onChannel?.invoke() }
             )
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
@@ -190,7 +164,6 @@ fun VideoCard(v: VideoItem, onClick: () -> Unit, onChannel: (() -> Unit)? = null
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
-            VideoMenuButton(v)
         }
     }
 }
@@ -219,7 +192,7 @@ fun CompactVideoRow(
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
         }
-        if (trailing != null) trailing() else VideoMenuButton(v)
+        if (trailing != null) trailing()
     }
 }
 
@@ -311,38 +284,5 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
         Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(body, color = G.Muted, textAlign = TextAlign.Center)
-    }
-}
-
-/**
- * Gulir tanpa batas: memanggil [onLoadMore] saat daftar hampir habis dan [enabled] bernilai true.
- * Setelah satu muatan selesai dan layar masih dekat ujung, dipanggil lagi otomatis.
- */
-@Composable
-fun InfiniteScrollEffect(
-    state: LazyListState,
-    enabled: Boolean,
-    buffer: Int = 4,
-    onLoadMore: () -> Unit
-) {
-    val load by rememberUpdatedState(onLoadMore)
-    val canLoad by rememberUpdatedState(enabled)
-    LaunchedEffect(state) {
-        snapshotFlow {
-            val info = state.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            info.totalItemsCount > 0 && last >= info.totalItemsCount - 1 - buffer && canLoad
-        }
-            .distinctUntilChanged()
-            .filter { it }
-            .collect { load() }
-    }
-}
-
-/** Indikator kecil di dasar daftar saat halaman berikutnya sedang dimuat. */
-@Composable
-fun LoadMoreSpinner() {
-    Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator(color = G.Gold, modifier = Modifier.size(26.dp), strokeWidth = 3.dp)
     }
 }

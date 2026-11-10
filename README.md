@@ -1,34 +1,16 @@
-# Gatra Video
+# Gatra
 
 Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan aksen emas dan biru.
 
 ## Fitur
 - Beranda: video terbaru dari channel yang kamu ikuti, rekomendasi dari video yang pernah kamu tonton, dan kategori (musik, game, berita, dll).
-- Tarik layar ke bawah untuk menyegarkan (atau tekan tombol muat ulang): setiap kali ada rekomendasi video baru.
-- Foto profil asli channel di setiap video.
 - Cari video dan channel, dengan daftar pencarian terakhir.
 - Pemutar sendiri (ExoPlayer + NewPipeExtractor): tanpa iklan, pilihan kualitas sampai 1080p, layar penuh.
 - Layar kecil (Picture-in-Picture): tekan Home saat video diputar.
 - Putar di latar belakang: layar boleh mati atau pindah aplikasi. Ada mini-player di bawah.
 - Langganan lokal: disimpan di HP, tanpa akun. Bisa impor dari Google Takeout (`subscriptions.csv`) dan ekspor.
-- Riwayat tontonan lokal (judul saja, bukan file video).
-- Tidak ada notifikasi video baru. Notifikasi hanya untuk kontrol pemutar dan kemajuan unduhan.
-- Layar tetap menyala selama video diputar (kecuali mode audio saja).
-- Kualitas Otomatis (menyesuaikan kecepatan internet), Mode Lancar 720p (prabuffer + berkas terkecil), dan cache disk 300 MB.
-- Kecepatan putar 0,5x–2x, subtitle, mode audio saja, dan pengatur waktu tidur (menu di pojok video).
-- Gestur: ketuk dua kali kiri/kanan = mundur/maju 10 detik; geser kiri = kecerahan, kanan = volume.
-- Putar otomatis video berikutnya dan antrean (tombol + di video terkait).
-- Koleksi: Tonton nanti, Playlist, Unduhan (tonton tanpa internet), dan Pengaturan.
-- Komentar video.
-- Rekomendasi Beranda dengan algoritma lokal (skor channel + kata kunci dari riwayat, sinyal durasi tonton, keragaman, eksplorasi 20%). Semua dihitung di HP, tidak ada data yang dikirim.
-- Kontrol pemutar rapi: tombol panah = video sebelumnya/berikutnya, tombol pengaturan (gir) ikut hilang bersama kontrol.
-- Bahasa audio utama permanen (mis. dubbing Indonesia) di Pengaturan; berubah otomatis bila kamu memilih bahasa lain di pemutar.
-- Tab Shorts: video vertikal pendek, digeser atas-bawah (daftar disusun dari pencarian karena YouTube tidak menyediakan daftar Shorts resmi).
-- Titik tiga di setiap video, tombol video sebelumnya/berikutnya, dan pilihan bahasa audio (dubbing) bila tersedia.
-- SponsorBlock (opsional, mati secara bawaan): melewati bagian sponsor lewat sponsor.ajay.app.
-- Gulir tanpa batas: Beranda (Untukmu dan tiap kategori), Pencarian, Channel, Langganan, Riwayat, video terkait di pemutar, dan isi playlist. Halaman berikutnya dimuat otomatis saat daftar hampir habis.
-- Halaman channel punya tab Video, Live, dan Playlist. Playlist bisa dibuka, diputar semua, dan digulir tanpa batas.
-- Gir di pojok kanan atas video hanya untuk kualitas (Otomatis, 1080p, 720p, 480p, dst). Pengaturan lain (bahasa audio, kecepatan, subtitle, mode audio saja, Mode Lancar, waktu tidur, sebelumnya/berikutnya) ada di gir pada bilah kontrol bawah.
+- Riwayat tontonan lokal (judul saja, bukan file video). Tidak ada video yang diunduh.
+- Tidak ada notifikasi video baru. Satu-satunya notifikasi: kontrol pemutar saat video berjalan.
 - Buka tautan YouTube: tombol Bagikan dari aplikasi lain, atau ketuk tautan youtube.com / youtu.be.
 
 ## Cara build lewat GitHub (cukup dari HP)

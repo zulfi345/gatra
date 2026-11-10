@@ -1,20 +1,9 @@
 package id.gatra.app.ui.theme
 
 import androidx.compose.foundation.Image
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
@@ -36,7 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -80,11 +68,6 @@ private val scheme = darkColorScheme(
     surfaceVariant = G.SurfaceHigh,
     onSurfaceVariant = G.Muted,
     outline = G.Outline,
-    surfaceContainerLowest = G.Bg,
-    surfaceContainerLow = G.Surface,
-    surfaceContainer = G.Surface,
-    surfaceContainerHigh = G.SurfaceHigh,
-    surfaceContainerHighest = G.SurfaceHigh,
     error = Color(0xFFFF6B6B)
 )
 
@@ -109,39 +92,34 @@ fun GatraTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, typography = typography, shapes = shapes, content = content)
 }
 
-/** Lambang Gatra untuk bar atas: G biru (pusaran dan elang) dari logo, di dalam lingkaran putih. */
+/** Logo Gatra (lambang elang dan pusaran) di dalam lingkaran putih agar terbaca di tema gelap. */
 @Composable
-fun GatraLogo(boxSize: Dp = 42.dp) {
-    Image(
-        painter = painterResource(R.drawable.logo_g),
-        contentDescription = "Gatra",
-        modifier = Modifier.size(boxSize).clip(CircleShape)
-    )
+fun GatraLogo(boxSize: Dp = 28.dp) {
+    Box(
+        Modifier.size(boxSize).clip(CircleShape).background(Color.White),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(R.drawable.logo_emblem),
+            contentDescription = "Gatra",
+            modifier = Modifier.fillMaxSize().padding(boxSize * 0.08f)
+        )
+    }
 }
 
-/** Logo di bar atas: lambang G, "GATRA" tebal miring emas-krem, "VIDEO" tipis abu-abu terang. */
 @Composable
 fun Wordmark() {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        GatraLogo(42.dp)
-        Spacer(Modifier.width(10.dp))
+        GatraLogo(34.dp)
+        Spacer(Modifier.width(8.dp))
         Text(
-            "GATRA",
+            "Gatra",
             style = TextStyle(
-                brush = Brush.horizontalGradient(listOf(Color(0xFFF7E7B4), Color(0xFFD9A93A))),
+                brush = G.Brand,
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Black,
-                fontStyle = FontStyle.Italic,
-                fontSize = 24.sp,
-                letterSpacing = 0.5.sp
+                letterSpacing = (-0.5).sp
             )
-        )
-        Spacer(Modifier.width(7.dp))
-        Text(
-            "VIDEO",
-            color = Color(0xFFC4CAD8),
-            fontWeight = FontWeight.Light,
-            fontSize = 22.sp,
-            letterSpacing = 1.sp
         )
     }
 }

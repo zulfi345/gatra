@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "id.gatra.app"
-        minSdk = 21
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
@@ -23,8 +23,6 @@ android {
             storePassword = "gatra2026"
             keyAlias = "gatra"
             keyPassword = "gatra2026"
-            enableV1Signing = true
-            enableV2Signing = true
         }
     }
 
@@ -97,8 +95,6 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
-    implementation("androidx.media3:media3-datasource:1.4.1")
-    implementation("androidx.media3:media3-database:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("com.google.guava:guava:33.2.1-android")
 

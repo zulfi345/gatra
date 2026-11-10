@@ -2,6 +2,7 @@ package id.gatra.app.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,13 +13,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,7 +24,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -40,54 +37,27 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import id.gatra.app.GatraApp
 import id.gatra.app.data.ChannelPage
 import id.gatra.app.data.VideoItem
-import id.gatra.app.data.YtPlaylist
 import id.gatra.app.data.compactCount
 import id.gatra.app.data.friendlyError
 import id.gatra.app.ui.theme.G
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import org.schabi.newpipe.extractor.Page
-import org.schabi.newpipe.extractor.linkhandler.ListLinkHandler
-
-/** Isi satu tab channel (Video, Live, atau Playlist) beserta status pemuatannya. */
-private class TabState {
-    var videos by mutableStateOf<List<VideoItem>>(emptyList())
-    var playlists by mutableStateOf<List<YtPlaylist>>(emptyList())
-    var next by mutableStateOf<Page?>(null)
-    var loaded by mutableStateOf(false)
-    var loading by mutableStateOf(false)
-    var loadingMore by mutableStateOf(false)
-    var error by mutableStateOf<String?>(null)
-}
-
-private val TAB_LABELS = listOf("Video", "Live", "Playlist")
 
 @Composable
-fun ChannelScreen(
-    url: String,
-    onBack: () -> Unit,
-    onVideo: (String) -> Unit,
-    onPlaylist: (String) -> Unit
-) {
+fun ChannelScreen(url: String, onBack: () -> Unit, onVideo: (String) -> Unit) {
     val app = LocalContext.current.applicationContext as GatraApp
     val repo = app.repo
     val scope = rememberCoroutineScope()
 
     var page by remember(url) { mutableStateOf<ChannelPage?>(null) }
+    var videos by remember(url) { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var next by remember(url) { mutableStateOf<Page?>(null) }
     var loading by remember(url) { mutableStateOf(true) }
+    var loadingMore by remember(url) { mutableStateOf(false) }
     var error by remember(url) { mutableStateOf<String?>(null) }
-    var attempt by remember(url) { mutableIntStateOf(0) }
+    var attempt by remember(url) { mutableStateOf(0) }
     var descExpanded by remember(url) { mutableStateOf(false) }
-    var tabIndex by remember(url) { mutableIntStateOf(0) }
-    var tabAttempt by remember(url) { mutableIntStateOf(0) }
-    val tabs = remember(url) { List(3) { TabState() } }
-    val listState = rememberLazyListState()
-
-    fun handlerFor(p: ChannelPage, i: Int): ListLinkHandler? = when (i) {
-        0 -> p.tab
-        1 -> p.liveTab
-        else -> p.playlistTab
-    }
 
     LaunchedEffect(url, attempt) {
         loading = true
@@ -95,9 +65,8 @@ fun ChannelScreen(
         try {
             val p = repo.channel(url)
             page = p
-            tabs[0].videos = p.videos
-            tabs[0].next = p.next
-            tabs[0].loaded = true
+            videos = p.videos
+            next = p.next
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -109,72 +78,18 @@ fun ChannelScreen(
     val channelUrl = page?.url ?: url
     val subscribed by remember(channelUrl) { repo.isSubscribed(channelUrl) }.collectAsStateWithLifecycle(false)
 
-    // Tab Live / Playlist baru dimuat saat dibuka pertama kali.
-    LaunchedEffect(page, tabIndex, tabAttempt) {
-        val p = page ?: return@LaunchedEffect
-        val t = tabs[tabIndex]
-        if (t.loaded || t.loading) return@LaunchedEffect
-        val handler = handlerFor(p, tabIndex)
-        if (handler == null) {
-            t.loaded = true
-            return@LaunchedEffect
-        }
-        t.loading = true
-        t.error = null
-        try {
-            val r = repo.tabFirst(handler, p.name, channelUrl, p.avatar)
-            t.videos = r.videos
-            t.playlists = r.playlists
-            t.next = r.next
-            t.loaded = true
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            t.error = friendlyError(e)
-        }
-        t.loading = false
-    }
-
-    // Gulir tanpa batas untuk tab yang sedang dibuka.
-    val cur = tabs[tabIndex]
-    InfiniteScrollEffect(
-        listState,
-        enabled = page != null && cur.loaded && cur.next != null && !cur.loadingMore && !cur.loading
-    ) {
-        val p = page
-        val h = if (p != null) handlerFor(p, tabIndex) else null
-        val n = cur.next
-        if (p != null && h != null && n != null) {
-            scope.launch {
-                cur.loadingMore = true
-                try {
-                    val r = repo.tabMore(h, n, p.name, channelUrl, p.avatar)
-                    val have = cur.videos.map { it.url }.toSet()
-                    cur.videos = cur.videos + r.videos.filter { it.url !in have }
-                    cur.playlists = cur.playlists + r.playlists
-                    cur.next = r.next
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    cur.next = null
-                }
-                cur.loadingMore = false
-            }
-        }
-    }
-
     Column(Modifier.fillMaxSize()) {
         GatraTopBar(
             leading = {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Kembali", tint = G.Text) }
             }
         )
-        val p = page
         when {
-            loading && p == null -> LoadingBox()
-            error != null && p == null -> ErrorBox(error ?: "") { attempt++ }
-            p != null -> {
-                LazyColumn(Modifier.fillMaxSize(), state = listState) {
+            loading && page == null -> LoadingBox()
+            error != null && page == null -> ErrorBox(error ?: "") { attempt++ }
+            page != null -> {
+                val p = page!!
+                LazyColumn(Modifier.fillMaxSize()) {
                     item {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -220,62 +135,39 @@ fun ChannelScreen(
                             }
                         }
                     }
-
-                    item {
-                        Row(
-                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            TAB_LABELS.forEachIndexed { i, label ->
-                                FilterChip(
-                                    selected = tabIndex == i,
+                    item { SectionTitle("Video") }
+                    if (videos.isEmpty()) {
+                        item { EmptyState("Belum ada video", "Channel ini belum punya video yang bisa ditampilkan.") }
+                    }
+                    items(videos) { v -> VideoCard(v, { onVideo(v.url) }) }
+                    if (next != null && p.tab != null) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                if (loadingMore) LoadingBox() else Button(
                                     onClick = {
-                                        tabIndex = i
-                                        scope.launch { if (listState.firstVisibleItemIndex > 1) listState.scrollToItem(1) }
+                                        val n = next
+                                        val tab = p.tab
+                                        if (n != null && tab != null) {
+                                            scope.launch {
+                                                loadingMore = true
+                                                try {
+                                                    val more = repo.moreChannel(tab, n, p.name, channelUrl)
+                                                    videos = videos + more.videos
+                                                    next = more.next
+                                                } catch (e: CancellationException) {
+                                                    throw e
+                                                } catch (e: Exception) {
+                                                    error = friendlyError(e)
+                                                }
+                                                loadingMore = false
+                                            }
+                                        }
                                     },
-                                    label = { Text(label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        containerColor = G.SurfaceHigh,
-                                        labelColor = G.Text,
-                                        selectedContainerColor = G.Gold,
-                                        selectedLabelColor = G.OnGold
-                                    )
-                                )
+                                    colors = ButtonDefaults.buttonColors(containerColor = G.SurfaceHigh, contentColor = G.Gold)
+                                ) { Text("Muat lebih banyak") }
                             }
                         }
                     }
-
-                    val empty = cur.videos.isEmpty() && cur.playlists.isEmpty()
-                    when {
-                        !cur.loaded && cur.error == null -> item { LoadingBox() }
-                        cur.error != null && empty -> item {
-                            ErrorBox(cur.error ?: "") {
-                                cur.error = null
-                                tabAttempt++
-                            }
-                        }
-                        tabIndex == 2 -> {
-                            if (cur.playlists.isEmpty()) {
-                                item { EmptyState("Belum ada playlist", "Channel ini belum punya playlist yang bisa ditampilkan.") }
-                            } else {
-                                items(cur.playlists) { pl -> YtPlaylistRow(pl) { onPlaylist(pl.url) } }
-                            }
-                        }
-                        else -> {
-                            if (cur.videos.isEmpty()) {
-                                item {
-                                    if (tabIndex == 1) {
-                                        EmptyState("Tidak ada siaran langsung", "Channel ini tidak sedang atau belum pernah siaran langsung.")
-                                    } else {
-                                        EmptyState("Belum ada video", "Channel ini belum punya video yang bisa ditampilkan.")
-                                    }
-                                }
-                            } else {
-                                items(cur.videos) { v -> VideoCard(v, { onVideo(v.url) }) }
-                            }
-                        }
-                    }
-                    if (cur.loadingMore) item { LoadMoreSpinner() }
                 }
             }
         }

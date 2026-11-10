@@ -19,8 +19,7 @@ data class VideoItem(
     val views: Long,
     val date: String?,
     val publishedMs: Long = 0L,
-    val live: Boolean = false,
-    val avatar: String? = null
+    val live: Boolean = false
 )
 
 data class ChannelItem(
@@ -39,11 +38,7 @@ fun List<Image>.bestUrl(): String? {
     return pick.url
 }
 
-fun StreamInfoItem.toVideo(
-    fallbackChannel: String? = null,
-    fallbackChannelUrl: String? = null,
-    fallbackAvatar: String? = null
-): VideoItem =
+fun StreamInfoItem.toVideo(fallbackChannel: String? = null, fallbackChannelUrl: String? = null): VideoItem =
     VideoItem(
         url = url,
         title = name ?: "",
@@ -53,8 +48,7 @@ fun StreamInfoItem.toVideo(
         durationSec = duration,
         views = viewCount,
         date = textualUploadDate,
-        live = streamType == StreamType.LIVE_STREAM,
-        avatar = uploaderAvatars?.bestUrl() ?: fallbackAvatar
+        live = streamType == StreamType.LIVE_STREAM
     )
 
 fun ChannelInfoItem.toChannel(): ChannelItem =
@@ -104,45 +98,12 @@ fun relativeTime(ms: Long): String {
     }
 }
 
-/** Ubah teks tanggal dari YouTube ("9 mo ago", "2026-01-15T04:00:21-08:00") ke bahasa Indonesia. */
-fun localizeDate(raw: String?): String {
-    val t = raw?.trim().orEmpty()
-    if (t.isEmpty()) return ""
-    Regex("""(\d+)\s*(second|sec|minute|min|hour|hr|day|week|wk|month|mo|year|yr)s?\s+ago""", RegexOption.IGNORE_CASE)
-        .find(t)?.let { m ->
-            val n = m.groupValues[1]
-            val unit = when (m.groupValues[2].lowercase()) {
-                "second", "sec" -> "detik"
-                "minute", "min" -> "menit"
-                "hour", "hr" -> "jam"
-                "day" -> "hari"
-                "week", "wk" -> "minggu"
-                "month", "mo" -> "bulan"
-                else -> "tahun"
-            }
-            return "$n $unit lalu"
-        }
-    if (t.length >= 10 && t[4] == '-' && t[7] == '-') {
-        try {
-            val ms = java.time.OffsetDateTime.parse(t).toInstant().toEpochMilli()
-            return relativeTime(ms)
-        } catch (_: Exception) {
-            try {
-                val ms = java.time.LocalDate.parse(t.take(10)).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
-                return relativeTime(ms)
-            } catch (_: Exception) {
-            }
-        }
-    }
-    return t
-}
-
 fun VideoItem.metaLine(includeChannel: Boolean = true): String {
     val parts = ArrayList<String>()
     if (includeChannel && channel.isNotBlank()) parts += channel
     if (live) parts += "Siaran langsung"
     else if (views >= 0) parts += "${compactCount(views)} x ditonton"
-    if (!date.isNullOrBlank()) parts += localizeDate(date)
+    if (!date.isNullOrBlank()) parts += date
     return parts.joinToString(" • ")
 }
 
@@ -152,21 +113,3 @@ fun friendlyError(e: Throwable): String = when {
         "YouTube sedang membatasi permintaan. Tunggu beberapa menit lalu coba lagi."
     else -> "Terjadi masalah: ${e.message ?: e.javaClass.simpleName}"
 }
-
-/** Playlist milik channel di YouTube (bukan playlist lokal di HP). */
-data class YtPlaylist(
-    val url: String,
-    val title: String,
-    val thumb: String?,
-    val count: Long,
-    val uploader: String
-)
-
-fun org.schabi.newpipe.extractor.playlist.PlaylistInfoItem.toYtPlaylist(): YtPlaylist =
-    YtPlaylist(
-        url = url,
-        title = name ?: "",
-        thumb = thumbnails?.bestUrl(),
-        count = streamCount,
-        uploader = uploaderName ?: ""
-    )

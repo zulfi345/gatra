@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -157,7 +156,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 error = friendlyError(e)
-                hasMore = false
             }
             loadingMore = false
         }
@@ -212,13 +210,7 @@ fun SearchScreen(
             FilterChip(selected = vm.channelsMode, onClick = { vm.setMode(true) }, label = { Text("Channel") }, colors = colors)
         }
 
-        val listState = rememberLazyListState()
-        InfiniteScrollEffect(
-            listState,
-            enabled = vm.searched && vm.hasMore && !vm.loading && !vm.loadingMore,
-            onLoadMore = vm::loadMore
-        )
-        LazyColumn(Modifier.fillMaxSize(), state = listState) {
+        LazyColumn(Modifier.fillMaxSize()) {
             when {
                 vm.loading -> item { LoadingBox() }
                 vm.error != null && !vm.searched -> item { ErrorBox(vm.error ?: "") { vm.submit() } }
@@ -254,7 +246,16 @@ fun SearchScreen(
                         items(vm.videos) { v ->
                             CompactVideoRow(v, onClick = { onVideo(v.url) })
                         }
-                        if (vm.loadingMore) item { LoadMoreSpinner() }
+                        if (vm.hasMore) {
+                            item {
+                                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    if (vm.loadingMore) LoadingBox() else Button(
+                                        onClick = vm::loadMore,
+                                        colors = ButtonDefaults.buttonColors(containerColor = G.SurfaceHigh, contentColor = G.Gold)
+                                    ) { Text("Muat lebih banyak") }
+                                }
+                            }
+                        }
                     }
                 }
             }

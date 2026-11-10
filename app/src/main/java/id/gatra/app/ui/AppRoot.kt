@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
@@ -54,15 +53,7 @@ private const val HOME = "home"
 private const val SUBS = "subs"
 private const val HISTORY = "history"
 private const val SEARCH = "search"
-private const val LIBRARY = "library"
-private const val SHORTS = "shorts"
-private const val WATCH_LATER = "watch_later"
-private const val PLAYLISTS = "playlists"
-private const val PLAYLIST = "playlist/{id}"
-private const val DOWNLOADS = "downloads"
-private const val SETTINGS = "settings"
 private const val CHANNEL = "channel?url={url}"
-private const val YT_PLAYLIST = "ytplaylist?url={url}"
 
 @Composable
 fun GatraRoot(playback: PlaybackController, repo: Repo) {
@@ -70,16 +61,12 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
     val player by playback.state.collectAsStateWithLifecycle()
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
-    val showTabs = route == HOME || route == SUBS || route == HISTORY || route == LIBRARY || route == SHORTS
+    val showTabs = route == HOME || route == SUBS || route == HISTORY
 
     val openVideo: (String) -> Unit = { playback.open(it) }
     val openChannel: (String) -> Unit = { url ->
         playback.minimize()
         nav.navigate("channel?url=${Uri.encode(url)}")
-    }
-
-    val openYtPlaylist: (String) -> Unit = { url ->
-        nav.navigate("ytplaylist?url=${Uri.encode(url)}")
     }
 
     BackHandler(enabled = player.active && player.expanded) { playback.minimize() }
@@ -99,14 +86,9 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
                                 unselectedIconColor = G.Muted,
                                 unselectedTextColor = G.Muted
                             )
-                            TabItem("Beranda", route == HOME, colors, rememberVectorPainter(Icons.Default.Home)) {
-                                goTab(nav, HOME)
-                                HomeEvents.request()
-                            }
-                            TabItem("Shorts", route == SHORTS, colors, rememberVectorPainter(Icons.Default.PlayArrow)) { goTab(nav, SHORTS) }
+                            TabItem("Beranda", route == HOME, colors, rememberVectorPainter(Icons.Default.Home)) { goTab(nav, HOME) }
                             TabItem("Langganan", route == SUBS, colors, painterResource(R.drawable.ic_subs)) { goTab(nav, SUBS) }
                             TabItem("Riwayat", route == HISTORY, colors, painterResource(R.drawable.ic_history)) { goTab(nav, HISTORY) }
-                            TabItem("Koleksi", route == LIBRARY, colors, rememberVectorPainter(Icons.Default.Favorite)) { goTab(nav, LIBRARY) }
                         }
                     }
                 }
@@ -116,53 +98,14 @@ fun GatraRoot(playback: PlaybackController, repo: Repo) {
                 composable(HOME) {
                     HomeScreen(onVideo = openVideo, onChannel = openChannel, onSearch = { nav.navigate(SEARCH) })
                 }
-                composable(SHORTS) { ShortsScreen(onChannel = openChannel, onOpenVideo = openVideo) }
                 composable(SUBS) { SubsScreen(onVideo = openVideo, onChannel = openChannel) }
                 composable(HISTORY) { HistoryScreen(onVideo = openVideo) }
-                composable(LIBRARY) {
-                    LibraryScreen(
-                        onWatchLater = { nav.navigate(WATCH_LATER) },
-                        onPlaylists = { nav.navigate(PLAYLISTS) },
-                        onDownloads = { nav.navigate(DOWNLOADS) },
-                        onSettings = { nav.navigate(SETTINGS) }
-                    )
-                }
-                composable(WATCH_LATER) {
-                    WatchLaterScreen(onBack = { nav.popBackStack() }, onVideo = openVideo, onPlayAll = playback::playAll)
-                }
-                composable(PLAYLISTS) {
-                    PlaylistsScreen(onBack = { nav.popBackStack() }, onOpen = { nav.navigate("playlist/$it") })
-                }
-                composable(PLAYLIST, arguments = listOf(navArgument("id") { type = NavType.LongType })) { e ->
-                    PlaylistDetailScreen(
-                        id = e.arguments?.getLong("id") ?: 0L,
-                        onBack = { nav.popBackStack() },
-                        onVideo = openVideo,
-                        onPlayAll = playback::playAll
-                    )
-                }
-                composable(DOWNLOADS) { DownloadsScreen(onBack = { nav.popBackStack() }, onVideo = openVideo) }
-                composable(SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }) }
                 composable(SEARCH) {
                     SearchScreen(onBack = { nav.popBackStack() }, onVideo = openVideo, onChannel = openChannel)
                 }
                 composable(CHANNEL, arguments = listOf(navArgument("url") { type = NavType.StringType })) { e ->
                     val url = Uri.decode(e.arguments?.getString("url").orEmpty())
-                    ChannelScreen(
-                        url = url,
-                        onBack = { nav.popBackStack() },
-                        onVideo = openVideo,
-                        onPlaylist = openYtPlaylist
-                    )
-                }
-                composable(YT_PLAYLIST, arguments = listOf(navArgument("url") { type = NavType.StringType })) { e ->
-                    val url = Uri.decode(e.arguments?.getString("url").orEmpty())
-                    YtPlaylistScreen(
-                        url = url,
-                        onBack = { nav.popBackStack() },
-                        onVideo = openVideo,
-                        onPlayAll = playback::playAll
-                    )
+                    ChannelScreen(url = url, onBack = { nav.popBackStack() }, onVideo = openVideo)
                 }
             }
         }
@@ -220,7 +163,7 @@ private fun MiniPlayer(playback: PlaybackController) {
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                info?.name ?: st.offlineTitle ?: if (st.error != null) "Gagal memuat video" else "Memuat video…",
+                info?.name ?: if (st.error != null) "Gagal memuat video" else "Memuat video…",
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
