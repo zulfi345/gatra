@@ -36,7 +36,7 @@ import id.gatra.app.data.VideoCursor
 import id.gatra.app.data.VideoItem
 import id.gatra.app.data.friendlyError
 import id.gatra.app.ui.theme.G
-import id.gatra.app.ui.theme.Wordmark
+import id.gatra.app.ui.theme.WordmarkWithPlay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -314,7 +314,7 @@ fun HomeScreen(
 
     Column(Modifier.fillMaxSize()) {
         GatraTopBar(
-            leading = { Wordmark() },
+            leading = { WordmarkWithPlay() },
             actions = {
                 RegionButton(vm.region) { showRegions = true }
                 IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Cari", tint = G.Text) }

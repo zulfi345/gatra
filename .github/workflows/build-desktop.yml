@@ -1,0 +1,57 @@
+name: Build Gatra untuk Windows (PC)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/build-desktop.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v4
+
+      - name: Pasang JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Pasang Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Buat aplikasi (versi portabel, tanpa instalasi)
+        run: gradle createDistributable --no-daemon --stacktrace
+
+      - name: Kompres versi portabel
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Compress-Archive -Path "build/compose/binaries/main/app/Gatra" -DestinationPath "out/Gatra-Windows-Portabel.zip" -Force
+
+      - name: Buat installer MSI
+        continue-on-error: true
+        run: gradle packageMsi --no-daemon --stacktrace
+
+      - name: Salin installer MSI
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path "build/compose/binaries/main/msi" -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) { Copy-Item $msi.FullName "out/Gatra-Windows-Installer.msi" }
+
+      - name: Unggah hasil
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gatra-Windows
+          path: desktop/out/*
+          retention-days: 30

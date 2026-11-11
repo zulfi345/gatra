@@ -51,6 +51,17 @@ Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan a
 4. Setelah centang hijau (sekitar 5 sampai 10 menit pertama), buka run-nya, turun ke **Artifacts**, unduh **Gatra-APK**, ekstrak, lalu pasang `Gatra.apk`.
 5. Update berikutnya: ubah kode, push lagi, unduh APK baru, pasang di atas yang lama (tanda tangan sama, data tetap aman).
 
+## Versi PC (Windows)
+Folder `desktop/` berisi Gatra untuk Windows. Proyeknya terpisah dari Android, jadi build APK tidak terpengaruh. Bukan emulator: ini aplikasi Windows asli (Compose Desktop).
+
+1. Push seluruh isi repo seperti biasa. Workflow **Build Gatra untuk Windows (PC)** jalan otomatis (atau tekan **Run workflow** di tab Actions).
+2. Setelah centang hijau, unduh artifact **Gatra-Windows**. Isinya:
+   - `Gatra-Windows-Portabel.zip`: ekstrak, lalu buka `Gatra\Gatra.exe`. Tidak perlu Java.
+   - `Gatra-Windows-Installer.msi`: installer biasa (ada bila langkah MSI berhasil).
+3. Pasang **VLC 64-bit** dari videolan.org (sekali saja). Gatra memakai VLC untuk memutar video di PC.
+
+Fitur versi PC saat ini: Beranda per kategori dengan gulir tanpa batas, pencarian, pemutar (putar/jeda, geser waktu, volume, pilihan kualitas sampai 1080p, layar penuh), tanpa iklan dan tanpa login. Langganan, riwayat, Shorts, unduhan, dan komentar belum ada di versi PC.
+
 ## Kalau video berhenti bisa diputar
 YouTube sering mengubah sistemnya. Perbaikannya biasanya cukup menaikkan versi NewPipeExtractor di `app/build.gradle.kts`:
 ```

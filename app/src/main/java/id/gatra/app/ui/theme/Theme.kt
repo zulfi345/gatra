@@ -10,6 +10,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -145,5 +148,35 @@ fun GradientButton(text: String, onClick: () -> Unit, modifier: Modifier = Modif
         contentAlignment = Alignment.Center
     ) {
         Text(text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    }
+}
+
+/** Lambang segitiga putar bergradien (pink - ungu - cyan) dengan sudut membulat, di sebelah tulisan Gatra. */
+@Composable
+fun PlayMark(modifier: Modifier = Modifier, markSize: Dp = 20.dp) {
+    Canvas(modifier.size(markSize)) {
+        val w = markSize.toPx()
+        val brush = Brush.linearGradient(
+            colors = listOf(G.Pink, G.Purple, G.Cyan),
+            start = Offset(0f, 0f),
+            end = Offset(w, w)
+        )
+        val path = Path().apply {
+            moveTo(w * 0.24f, w * 0.14f)
+            lineTo(w * 0.24f, w * 0.86f)
+            lineTo(w * 0.86f, w * 0.50f)
+            close()
+        }
+        drawPath(path, brush, style = Fill)
+        drawPath(path, brush, style = Stroke(width = w * 0.16f, join = StrokeJoin.Round, cap = StrokeCap.Round))
+    }
+}
+
+/** Tulisan "Gatra" + lambang segitiga putar (dipakai di Beranda). */
+@Composable
+fun WordmarkWithPlay() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Wordmark()
+        PlayMark(Modifier.padding(start = 2.dp).offset(y = (-7).dp), markSize = 20.dp)
     }
 }
