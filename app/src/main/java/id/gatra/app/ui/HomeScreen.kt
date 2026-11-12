@@ -218,7 +218,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadHome(force: Boolean) {
         try {
-            feed = repo.feed()
+            // Gagal memuat video langganan tidak boleh menghentikan pembaruan rekomendasi.
+            feed = try {
+                repo.feed()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                emptyList()
+            }
             var fresh = 0
             if (force || recs.value.isEmpty()) fresh = repo.refreshRecommendations()
             if (feed.isEmpty() && fresh == 0 && recs.value.isEmpty()) {

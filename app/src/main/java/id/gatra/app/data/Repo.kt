@@ -114,8 +114,13 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
 
     /** Rekomendasi Beranda, diurutkan oleh algoritma lokal [Ranking] (otomatis menyusun ulang saat minatmu berubah). */
     val recommendations: Flow<List<VideoItem>> =
-        combine(db.recs().pool(), db.signals().allFlow()) { pool, sigs -> Ranking.rank(pool, sigs) }
-            .flowOn(Dispatchers.Default)
+        combine(db.recs().pool(), db.signals().allFlow(), db.history().all()) { pool, sigs, hist ->
+            val since = System.currentTimeMillis() - 48L * 3_600_000L
+            val recent = hist.filter { it.watchedAt >= since }
+                .groupingBy { Ranking.channelKey(it.channelUrl, it.channel) }
+                .eachCount()
+            Ranking.rank(pool, sigs, recent)
+        }.flowOn(Dispatchers.Default)
 
     private val bg = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -213,7 +218,19 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                 watchedAt = now
             )
         )
-        val related = info.relatedItems.filterIsInstance<StreamInfoItem>().take(15)
+        // Video terkait biasanya didominasi channel yang sama: batasi supaya rekomendasi tetap beragam.
+        val watchedKey = Ranking.channelKey(info.uploaderUrl, info.uploaderName ?: "")
+        var sameAsWatched = 0
+        val related = capPerKey(info.relatedItems.filterIsInstance<StreamInfoItem>().take(30), 2) {
+            Ranking.channelKey(it.uploaderUrl, it.uploaderName ?: "")
+        }.filter {
+            if (Ranking.channelKey(it.uploaderUrl, it.uploaderName ?: "") == watchedKey) {
+                sameAsWatched++
+                sameAsWatched <= 1
+            } else {
+                true
+            }
+        }.take(12)
         if (related.isNotEmpty()) {
             db.recs().insertAll(
                 related.mapIndexed { i, r ->
@@ -285,7 +302,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         val sigs = db.signals().all().map { it to Ranking.decayed(it.weight, it.updatedAt, now) }
         // Channel dan kata kunci yang paling kamu sukai saat ini.
         val topChannels = sigs.filter { it.first.name.startsWith("ch:") && it.second > 0.8 }
-            .sortedByDescending { it.second }.take(2)
+            .sortedByDescending { it.second }.take(1)
             .mapNotNull { (s, _) ->
                 val rest = s.name.removePrefix("ch:")
                 if (rest.startsWith("http")) db.history().channelNameFor(rest) else rest
@@ -301,8 +318,8 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
             "gameplay seru", "resep masakan", "review teknologi terbaru", "film pendek", "podcast indonesia"
         ).shuffled()
         val known = topChannels.isNotEmpty() || keywordQueries.isNotEmpty() || fallbackChannels.isNotEmpty()
-        // Satu topik acak = jatah eksplorasi supaya Beranda tidak terjebak di satu selera.
-        return (topChannels + keywordQueries + fallbackChannels + topics.take(if (known) 1 else 3)).distinct()
+        // Beberapa topik acak = jatah eksplorasi supaya Beranda tidak terjebak di satu selera.
+        return (topChannels + keywordQueries + fallbackChannels + topics.take(if (known) 3 else 4)).distinct()
     }
 
     /**
@@ -316,7 +333,9 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                 async { safe(emptyList<VideoItem>()) { search(q, false).videos.take(8) } }
             }.awaitAll()
         }
-        val merged = interleave(results).distinctBy { it.url }.take(40)
+        val merged = capPerKey(interleave(results).distinctBy { it.url }, 2) {
+            Ranking.channelKey(it.channelUrl, it.channel)
+        }.take(40)
         if (merged.isNotEmpty()) {
             val now = System.currentTimeMillis()
             db.recs().insertAll(
@@ -457,12 +476,58 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
     suspend fun feed(): List<VideoItem> = withContext(Dispatchers.IO) {
         val subs = db.subs().snapshot()
         if (subs.isEmpty()) return@withContext emptyList<VideoItem>()
-        val gate = Semaphore(6)
-        coroutineScope {
-            subs.map { s -> async { gate.withPermit { safe<List<VideoItem>>(emptyList()) { fetchRss(s) } } } }
+        val gate = Semaphore(4)
+        val all = coroutineScope {
+            subs.map { s -> async { gate.withPermit { fetchSubVideos(s) } } }
                 .awaitAll()
                 .flatten()
-        }.sortedByDescending { it.publishedMs }.take(400)
+        }.distinctBy { it.url }.sortedByDescending { it.publishedMs }.take(400)
+        // Semua channel gagal dimuat (bukan "memang belum ada video"): beri tahu, jangan tampilkan layar kosong.
+        if (all.isEmpty()) throw java.io.IOException("Video langganan gagal dimuat")
+        all
+    }
+
+    /** RSS resmi YouTube dulu (dicoba 2 kali); bila tetap kosong, ambil dari halaman channel lewat extractor. */
+    private fun fetchSubVideos(sub: SubscriptionEntity): List<VideoItem> {
+        var r = safe<List<VideoItem>>(emptyList()) { fetchRss(sub) }
+        if (r.isEmpty()) r = safe<List<VideoItem>>(emptyList()) { fetchRss(sub) }
+        if (r.isEmpty()) r = safe<List<VideoItem>>(emptyList()) { fetchViaExtractor(sub) }
+        return r
+    }
+
+    private fun fetchViaExtractor(sub: SubscriptionEntity): List<VideoItem> {
+        val info = ChannelInfo.getInfo(yt, sub.url)
+        val tab = info.tabs.firstOrNull { it.contentFilters.contains("videos") } ?: info.tabs.firstOrNull()
+            ?: return emptyList()
+        val tabInfo = ChannelTabInfo.getInfo(yt, tab)
+        val avatar = sub.avatar ?: info.avatars?.bestUrl()
+        val now = System.currentTimeMillis()
+        return tabInfo.relatedItems.filterIsInstance<StreamInfoItem>().take(15).mapIndexed { i, item ->
+            item.toVideo(sub.name, sub.url, avatar)
+                .copy(publishedMs = approxPublishedMs(item.textualUploadDate, now, i))
+        }
+    }
+
+    /** Perkiraan waktu terbit dari teks seperti "3 hari yang lalu" / "3 days ago"; bila gagal, urut berdasarkan posisi. */
+    private fun approxPublishedMs(raw: String?, now: Long, index: Int): Long {
+        val m = Regex(
+            """(\d+)\s*(detik|menit|jam|hari|minggu|bulan|tahun|second|sec|minute|min|hour|hr|day|week|wk|month|mo|year|yr)""",
+            RegexOption.IGNORE_CASE
+        ).find(raw.orEmpty())
+        if (m != null) {
+            val n = m.groupValues[1].toLongOrNull() ?: 0L
+            val unitMs = when (m.groupValues[2].lowercase()) {
+                "detik", "second", "sec" -> 1_000L
+                "menit", "minute", "min" -> 60_000L
+                "jam", "hour", "hr" -> 3_600_000L
+                "hari", "day" -> 86_400_000L
+                "minggu", "week", "wk" -> 7 * 86_400_000L
+                "bulan", "month", "mo" -> 30 * 86_400_000L
+                else -> 365 * 86_400_000L
+            }
+            return (now - n * unitMs).coerceAtLeast(1L)
+        }
+        return (now - index * 6L * 3_600_000L).coerceAtLeast(1L)
     }
 
     /** Dipakai saat belum ada riwayat dan langganan: campuran beberapa topik populer. */
@@ -472,6 +537,21 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
             async { safe(emptyList<VideoItem>()) { search(q, false).videos.take(6) } }
         }.awaitAll()
         interleave(results).distinctBy { it.url }
+    }
+
+    /** Simpan paling banyak [max] item untuk setiap kunci (mis. channel), urutan asli dipertahankan. */
+    private fun <T> capPerKey(items: List<T>, max: Int, key: (T) -> String): List<T> {
+        val seen = HashMap<String, Int>()
+        return items.filter {
+            val k = key(it)
+            val n = seen[k] ?: 0
+            if (n < max) {
+                seen[k] = n + 1
+                true
+            } else {
+                false
+            }
+        }
     }
 
     private fun <T> interleave(lists: List<List<T>>): List<T> {

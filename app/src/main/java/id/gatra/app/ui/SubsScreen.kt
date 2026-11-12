@@ -57,6 +57,7 @@ import id.gatra.app.data.friendlyError
 import id.gatra.app.ui.theme.G
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -77,25 +78,37 @@ class SubsViewModel(private val app: Application) : AndroidViewModel(app) {
         private set
     var message by mutableStateOf<String?>(null)
 
+    private var refreshJob: Job? = null
+    private var generation = 0
+
     init {
-        // Muat ulang feed setiap daftar langganan berubah.
-        viewModelScope.launch { subs.collect { refresh() } }
+        // Muat ulang feed setiap daftar langganan berubah (daftar kosong awal dari flow dilewati).
+        viewModelScope.launch {
+            subs.collect { list ->
+                if (list.isEmpty()) feed = emptyList() else refresh()
+            }
+        }
     }
 
     fun refresh() {
-        viewModelScope.launch {
+        val my = ++generation
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             loading = feed.isEmpty()
             refreshing = true
             try {
-                feed = repo.feed()
-                launch { repo.backfillAvatars() }
+                val result = repo.feed()
+                if (my == generation) feed = result
+                viewModelScope.launch { repo.backfillAvatars() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                message = friendlyError(e)
+                if (my == generation) message = friendlyError(e)
             }
-            refreshing = false
-            loading = false
+            if (my == generation) {
+                refreshing = false
+                loading = false
+            }
         }
     }
 
