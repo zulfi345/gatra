@@ -119,7 +119,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
             val recent = hist.filter { it.watchedAt >= since }
                 .groupingBy { Ranking.channelKey(it.channelUrl, it.channel) }
                 .eachCount()
-            Ranking.rank(pool, sigs, recent)
+            Ranking.rank(pool, sigs, recent, hist)
         }.flowOn(Dispatchers.Default)
 
     private val bg = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -136,6 +136,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
     private suspend fun bumpVideo(channelUrl: String?, channel: String, title: String, chDelta: Double, kwDelta: Double) {
         bump(Ranking.channelKey(channelUrl, channel), chDelta)
         for (k in Ranking.keywords(title)) bump("kw:$k", kwDelta)
+        Genres.classify(title, channel)?.let { bump("g:$it", chDelta * 0.6) }
     }
 
     /**
@@ -221,12 +222,12 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         // Video terkait biasanya didominasi channel yang sama: batasi supaya rekomendasi tetap beragam.
         val watchedKey = Ranking.channelKey(info.uploaderUrl, info.uploaderName ?: "")
         var sameAsWatched = 0
-        val related = capPerKey(info.relatedItems.filterIsInstance<StreamInfoItem>().take(30), 2) {
+        val related = capPerKey(info.relatedItems.filterIsInstance<StreamInfoItem>().take(30), 3) {
             Ranking.channelKey(it.uploaderUrl, it.uploaderName ?: "")
         }.filter {
             if (Ranking.channelKey(it.uploaderUrl, it.uploaderName ?: "") == watchedKey) {
                 sameAsWatched++
-                sameAsWatched <= 1
+                sameAsWatched <= 2
             } else {
                 true
             }
@@ -238,7 +239,8 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                         url = r.url, title = r.name ?: "", channel = r.uploaderName ?: "",
                         thumbnail = r.thumbnails.bestUrl(), duration = r.duration,
                         views = r.viewCount, savedAt = now, rank = i,
-                        channelUrl = r.uploaderUrl, avatar = r.uploaderAvatars?.bestUrl()
+                        channelUrl = r.uploaderUrl, avatar = r.uploaderAvatars?.bestUrl(),
+                        genre = Genres.classify(r.name ?: "", r.uploaderName ?: "")
                     )
                 }
             )
@@ -294,56 +296,66 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         }
     }
 
-    /** Susun daftar kueri pencarian dari minat yang dipelajari (atau topik acak bila belum ada). */
-    private suspend fun buildQueries(): List<String> {
+    /**
+     * Rencana pencarian rekomendasi: pasangan (genre, kueri). Genre favoritmu dapat lebih banyak kueri,
+     * ditambah genre bertetangga, genre baru, dan satu kueri dari channel/kata kunci favorit (tanpa genre).
+     */
+    private suspend fun buildPlan(): List<Pair<String?, String>> {
         // Di luar daerah asal: tampilkan yang populer di negara itu, tanpa dicampur selera dari riwayat.
-        if (!Regions.isHome) return Regions.current.queries.shuffled()
+        if (!Regions.isHome) return Regions.current.queries.shuffled().map { null to it }
         val now = System.currentTimeMillis()
-        val sigs = db.signals().all().map { it to Ranking.decayed(it.weight, it.updatedAt, now) }
-        // Channel dan kata kunci yang paling kamu sukai saat ini.
-        val topChannels = sigs.filter { it.first.name.startsWith("ch:") && it.second > 0.8 }
-            .sortedByDescending { it.second }.take(1)
-            .mapNotNull { (s, _) ->
-                val rest = s.name.removePrefix("ch:")
-                if (rest.startsWith("http")) db.history().channelNameFor(rest) else rest
+        val day = (now / 86_400_000L).toInt()
+        val signals = db.signals().all()
+        val targets = Ranking.genreTargets(Ranking.genreProfile(db.history().recent(), signals, now), now)
+        val plan = ArrayList<Pair<String?, String>>()
+        if (targets.isEmpty()) {
+            // Riwayat belum cukup: campuran beberapa genre.
+            for (g in Genres.all.shuffled().take(6)) plan += g.id to Genres.pickQuery(g, day, 0)
+        } else {
+            for (entry in targets.entries.sortedByDescending { it.value }) {
+                val g = Genres.byId(entry.key) ?: continue
+                val n = if (entry.value >= 0.30) 2 else 1
+                for (i in 0 until n) plan += g.id to Genres.pickQuery(g, day, i)
             }
+        }
+        val sigs = signals.map { it to Ranking.decayed(it.weight, it.updatedAt, now) }
+        val topChannel = sigs.filter { it.first.name.startsWith("ch:") && it.second > 0.8 }
+            .maxByOrNull { it.second }?.first?.name?.removePrefix("ch:")
+            ?.let { rest -> if (rest.startsWith("http")) db.history().channelNameFor(rest) else rest }
+        if (!topChannel.isNullOrBlank()) plan += null to topChannel
         val topKeywords = sigs.filter { it.first.name.startsWith("kw:") && it.second > 0.8 }
-            .sortedByDescending { it.second }.map { it.first.name.removePrefix("kw:") }
-        val keywordQueries = topKeywords.chunked(2).take(2).map { it.joinToString(" ") }
-        val fallbackChannels =
-            if (topChannels.isEmpty() && keywordQueries.isEmpty()) db.history().recentChannels().shuffled().take(3)
-            else emptyList()
-        val topics = listOf(
-            "musik indonesia terbaru", "berita terkini hari ini", "video populer indonesia",
-            "gameplay seru", "resep masakan", "review teknologi terbaru", "film pendek", "podcast indonesia"
-        ).shuffled()
-        val known = topChannels.isNotEmpty() || keywordQueries.isNotEmpty() || fallbackChannels.isNotEmpty()
-        // Beberapa topik acak = jatah eksplorasi supaya Beranda tidak terjebak di satu selera.
-        return (topChannels + keywordQueries + fallbackChannels + topics.take(if (known) 3 else 4)).distinct()
+            .sortedByDescending { it.second }.take(2)
+            .joinToString(" ") { it.first.name.removePrefix("kw:") }
+        if (topKeywords.isNotBlank()) plan += null to topKeywords
+        return plan.distinctBy { it.second }.take(9)
     }
+
+    /** Dipakai gulir tanpa batas di Beranda: kueri dari rencana yang sama. */
+    private suspend fun buildQueries(): List<String> = buildPlan().map { it.second }
 
     /**
      * Ambil video segar untuk "Rekomendasi untukmu": dicari dari channel yang sering kamu tonton
      * ditambah topik acak, lalu disimpan sehingga langsung tampil di beranda.
      */
     suspend fun refreshRecommendations(): Int = withContext(Dispatchers.IO) {
-        val queries = buildQueries()
+        val plan = buildPlan()
         val results = coroutineScope {
-            queries.map { q ->
-                async { safe(emptyList<VideoItem>()) { search(q, false).videos.take(8) } }
+            plan.map { (genre, q) ->
+                async { genre to safe(emptyList<VideoItem>()) { search(q, false).videos.take(10) } }
             }.awaitAll()
         }
-        val merged = capPerKey(interleave(results).distinctBy { it.url }, 2) {
-            Ranking.channelKey(it.channelUrl, it.channel)
-        }.take(40)
+        // Setiap video membawa genre dari kueri yang menemukannya (kueri tanpa genre: ditebak dari judul).
+        val labeled = results.map { (genre, videos) -> videos.map { it to genre } }
+        val merged = interleave(labeled).distinctBy { it.first.url }.take(70)
         if (merged.isNotEmpty()) {
             val now = System.currentTimeMillis()
             db.recs().insertAll(
-                merged.mapIndexed { i, v ->
+                merged.mapIndexed { i, (v, genre) ->
                     RecEntity(
                         url = v.url, title = v.title, channel = v.channel, thumbnail = v.thumb,
                         duration = v.durationSec, views = v.views, savedAt = now, rank = i,
-                        channelUrl = v.channelUrl, avatar = v.avatar
+                        channelUrl = v.channelUrl, avatar = v.avatar,
+                        genre = genre ?: Genres.classify(v.title, v.channel)
                     )
                 }
             )

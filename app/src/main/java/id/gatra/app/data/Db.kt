@@ -44,7 +44,8 @@ data class RecEntity(
     val savedAt: Long,
     val rank: Int,
     val channelUrl: String? = null,
-    val avatar: String? = null
+    val avatar: String? = null,
+    val genre: String? = null
 )
 
 /** Minat yang dipelajari dari kebiasaanmu: "ch:<channel>" atau "kw:<kata kunci>", dengan bobot yang meluruh seiring waktu. */
@@ -210,6 +211,9 @@ interface HistoryDao {
     @Query("DELETE FROM history")
     suspend fun clear()
 
+    @Query("SELECT * FROM history ORDER BY watchedAt DESC LIMIT 200")
+    suspend fun recent(): List<HistoryEntity>
+
     @Query("SELECT channel FROM history WHERE channel != '' GROUP BY channel ORDER BY MAX(watchedAt) DESC LIMIT 12")
     suspend fun recentChannels(): List<String>
 
@@ -269,7 +273,7 @@ interface RecDao {
         WatchLaterEntity::class, PlaylistEntity::class, PlaylistItemEntity::class, DownloadEntity::class,
         SignalEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class GatraDb : RoomDatabase() {
@@ -324,5 +328,12 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
             "CREATE TABLE IF NOT EXISTS `signals` (`name` TEXT NOT NULL, `weight` REAL NOT NULL, " +
                 "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`name`))"
         )
+    }
+}
+
+/** Versi 5: rekomendasi menyimpan genre (dari kueri pencarian atau tebakan judul). Data lama tidak dihapus. */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE recommendations ADD COLUMN genre TEXT")
     }
 }

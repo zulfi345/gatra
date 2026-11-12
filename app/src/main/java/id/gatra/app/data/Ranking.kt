@@ -12,10 +12,12 @@ import kotlin.math.tanh
  * 1. Skor kecocokan: bobot channel + kata kunci judul (dipelajari dari riwayat dan tindakanmu).
  * 2. Bobot meluruh separuh setiap 30 hari supaya selera lama tidak mendominasi.
  * 3. Kesegaran dan sedikit popularitas ikut dinilai.
- * 4. Keragaman: tidak pernah 2 video berturut-turut dari channel yang sama; maksimal 2 video per channel
- *    di 20 teratas dan 3 di seluruh daftar; judul yang topiknya mirip dengan video sebelumnya diturunkan.
- * 5. Jeda: channel yang baru kamu tonton dalam 2 hari terakhir diturunkan sedikit supaya yang lain ikut tampil.
- * 6. Eksplorasi: setiap slot ke-3 diisi video dari channel/topik yang belum akrab.
+ * 4. Jatah genre: Beranda dibagi per genre. 70% untuk genre yang paling sering kamu tonton (dibagi sesuai
+ *    porsi tontonanmu), 20% untuk genre "bertetangga", 10% untuk genre baru dan video yang belum
+ *    dikenali genrenya. Isi tiap jatah boleh dari channel mana saja; tidak ada batas jumlah per channel.
+ * 5. Keragaman halus: channel yang sudah banyak terpilih diturunkan sedikit (bukan dilarang), dan dua video
+ *    berturut-turut dari channel yang sama dihindari bila ada pilihan lain.
+ * 6. Jeda: channel yang baru kamu tonton dalam 2 hari terakhir diturunkan sedikit supaya yang lain ikut tampil.
  */
 object Ranking {
     private const val HALF_LIFE_DAYS = 30.0
@@ -48,12 +50,60 @@ object Ranking {
         return out.toList()
     }
 
+    // ---------- Jatah genre ----------
+
+    private const val SHARE_FAVORITE = 0.70
+    private const val SHARE_NEIGHBOR = 0.20
+    private const val SHARE_NEW = 0.10
+
+    /** Porsi minat per genre (id genre -> bobot), dari riwayat tontonan dan tindakanmu, meluruh seiring waktu. */
+    fun genreProfile(history: List<HistoryEntity>, signals: List<SignalEntity>, now: Long): Map<String, Double> {
+        val raw = HashMap<String, Double>()
+        for (h in history.take(200)) {
+            val g = Genres.classify(h.title, h.channel) ?: continue
+            val ageDays = (now - h.watchedAt).coerceAtLeast(0L) / 86_400_000.0
+            raw[g] = (raw[g] ?: 0.0) + 0.5.pow(ageDays / HALF_LIFE_DAYS)
+        }
+        for (sig in signals) {
+            if (!sig.name.startsWith("g:")) continue
+            val id = sig.name.substring(2)
+            raw[id] = (raw[id] ?: 0.0) + decayed(sig.weight, sig.updatedAt, now) * 0.5
+        }
+        return raw.filter { it.value > 0.05 }
+    }
+
+    /**
+     * Jatah tampil per genre (jumlahnya 1.0). Kosong bila riwayat belum cukup: Beranda lalu dicampur rata.
+     * Kunci "?" = video yang genrenya belum dikenali.
+     */
+    fun genreTargets(profile: Map<String, Double>, now: Long): Map<String, Double> {
+        if (profile.values.sum() < 1.0) return emptyMap()
+        val favorites = profile.entries.sortedByDescending { it.value }.take(5)
+        val favSum = favorites.sumOf { it.value }
+        val out = LinkedHashMap<String, Double>()
+        for (f in favorites) out[f.key] = SHARE_FAVORITE * f.value / favSum
+        val favIds = favorites.map { it.key }.toSet()
+
+        val rnd = java.util.Random(now / 86_400_000L)
+        val others = Genres.all.map { it.id }.filter { it !in favIds }.shuffled(rnd)
+        var neighbors = favorites.take(3)
+            .flatMap { Genres.byId(it.key)?.near ?: emptyList() }
+            .filter { it !in favIds }
+            .distinct()
+            .take(4)
+        if (neighbors.isEmpty()) neighbors = others.take(2)
+        for (n in neighbors) out[n] = SHARE_NEIGHBOR / neighbors.size
+
+        val fresh = others.filter { it !in neighbors }.take(2) + "?"
+        for (n in fresh) out[n] = (out[n] ?: 0.0) + SHARE_NEW / fresh.size
+        return out
+    }
+
     private class Scored(
         val e: RecEntity,
         val channel: String,
+        val genre: String,
         val score: Double,
-        val familiarity: Double,
-        val appeal: Double,
         val kws: Set<String>
     )
 
@@ -61,6 +111,7 @@ object Ranking {
         pool: List<RecEntity>,
         signals: List<SignalEntity>,
         recentChannels: Map<String, Int> = emptyMap(),
+        history: List<HistoryEntity> = emptyList(),
         now: Long = System.currentTimeMillis()
     ): List<VideoItem> {
         if (pool.isEmpty()) return emptyList()
@@ -71,7 +122,7 @@ object Ranking {
         val scored = pool.map { e ->
             val ck = channelKey(e.channelUrl, e.channel)
             val kws = keywords(e.title)
-            // Bobot channel dibatasi lebih kecil supaya satu channel tidak menenggelamkan yang lain.
+            // Bobot channel dibatasi kecil supaya satu channel tidak menenggelamkan yang lain.
             val chScore = tanh((w[ck] ?: 0.0) / 8.0) * 2.0
             val kwVals = kws.map { tanh((w["kw:$it"] ?: 0.0) / 5.0) }
             val kwScore = (kwVals.sortedDescending().take(3).sum() + kwVals.filter { it < 0 }.sum()) * 0.8
@@ -81,37 +132,48 @@ object Ranking {
             val jitter = (((e.url.hashCode() xor day.toInt()) and 0x7fffffff) % 1000) / 1000.0 * 0.15
             // Jeda: channel yang baru ditonton diturunkan sedikit.
             val cooldown = minOf(1.2, 0.4 * (recentChannels[ck] ?: 0))
-            Scored(
-                e, ck, chScore + kwScore + fresh + pop + jitter - cooldown,
-                abs(chScore) + abs(kwScore), fresh + pop + jitter, kws.toSet()
-            )
+            val genre = e.genre ?: Genres.classify(e.title, e.channel) ?: "?"
+            Scored(e, ck, genre, chScore + kwScore + fresh + pop + jitter - cooldown, kws.toSet())
         }.filter { it.score > -2.5 } // yang jelas tidak disukai disingkirkan
 
-        val remaining = scored.sortedByDescending { it.score }.toMutableList()
-        val result = ArrayList<Scored>()
-        val perChannel = HashMap<String, Int>()
-        while (remaining.isNotEmpty() && result.size < 60) {
-            val limit = if (result.size < 20) 2 else 3
-            val lastChannel = result.lastOrNull()?.channel
-            var candidates = remaining.filter { (perChannel[it.channel] ?: 0) < limit && it.channel != lastChannel }
-            if (candidates.isEmpty()) candidates = remaining.filter { it.channel != lastChannel }
-            if (candidates.isEmpty()) candidates = remaining.toList()
+        // Kelompokkan per genre; di dalam kelompok, yang paling cocok di depan.
+        val buckets = HashMap<String, MutableList<Scored>>()
+        for (sc in scored.sortedByDescending { it.score }) buckets.getOrPut(sc.genre) { ArrayList() }.add(sc)
 
+        var targets = genreTargets(genreProfile(history, signals, now), now)
+        if (targets.isEmpty()) {
+            val ids = buckets.keys.toList()
+            targets = ids.associateWith { 1.0 / ids.size }
+        }
+
+        val total = minOf(60, scored.size)
+        val picked = HashMap<String, Int>()
+        val perChannel = HashMap<String, Int>()
+        val result = ArrayList<Scored>()
+        while (result.size < total) {
+            val slot = result.size
+            // Genre yang paling "ketinggalan" dari jatahnya dan masih punya video.
+            val live = targets.filter { (buckets[it.key]?.isNotEmpty()) == true }
+            val genre = live.maxByOrNull { (g, share) -> share * (slot + 1) - (picked[g] ?: 0) }?.key
+                ?: buckets.entries.filter { it.value.isNotEmpty() }.maxByOrNull { it.value.first().score }?.key
+                ?: break
+            val bucket = buckets[genre] ?: break
+            val lastChannel = result.lastOrNull()?.channel
             val recentWords = HashSet<String>()
             for (r in result.takeLast(3)) recentWords.addAll(r.kws)
 
-            var pick: Scored? = null
-            if (result.size % 3 == 2) {
-                pick = candidates.filter { it.familiarity < 0.5 && it.score > -1.0 }.maxByOrNull { it.appeal }
-            }
-            val chosen = pick ?: candidates.maxByOrNull { c ->
+            val chosen = bucket.maxByOrNull { c ->
                 val overlap = minOf(3, c.kws.count { it in recentWords })
-                c.score - 0.7 * (perChannel[c.channel] ?: 0) - 0.35 * overlap
-            } ?: remaining.first()
+                c.score -
+                    0.35 * (perChannel[c.channel] ?: 0) -
+                    (if (c.channel == lastChannel) 1.0 else 0.0) -
+                    0.25 * overlap
+            } ?: break
 
+            bucket.remove(chosen)
             result += chosen
+            picked[genre] = (picked[genre] ?: 0) + 1
             perChannel[chosen.channel] = (perChannel[chosen.channel] ?: 0) + 1
-            remaining.remove(chosen)
         }
         return result.map {
             val e = it.e
