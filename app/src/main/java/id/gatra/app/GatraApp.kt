@@ -10,6 +10,7 @@ import id.gatra.app.data.MIGRATION_1_2
 import id.gatra.app.data.MIGRATION_2_3
 import id.gatra.app.data.MIGRATION_3_4
 import id.gatra.app.data.MIGRATION_4_5
+import id.gatra.app.data.MIGRATION_5_6
 import id.gatra.app.data.Repo
 import id.gatra.app.player.DownloadCenter
 import id.gatra.app.player.PlaybackController
@@ -52,7 +53,7 @@ class GatraApp : Application() {
         id.gatra.app.data.Regions.apply(savedRegion)
 
         db = Room.databaseBuilder(this, GatraDb::class.java, "gatra.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .fallbackToDestructiveMigration()
             .build()
         repo = Repo(db, http)

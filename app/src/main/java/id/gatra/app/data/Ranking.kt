@@ -11,7 +11,8 @@ import kotlin.math.tanh
  *
  * 1. Skor kecocokan: bobot channel + kata kunci judul (dipelajari dari riwayat dan tindakanmu).
  * 2. Bobot meluruh separuh setiap 30 hari supaya selera lama tidak mendominasi.
- * 3. Kesegaran dan sedikit popularitas ikut dinilai.
+ * 3. Kesegaran dihitung dari umur video; berita cepat basi, cerita/edukasi/musik awet, jadi video lama
+ *    yang bagus tetap bisa muncul. Popularitas dan langganan ikut dinilai, tayangan yang tidak dibuka diturunkan.
  * 4. Jatah genre: Beranda dibagi per genre. 70% untuk genre yang paling sering kamu tonton (dibagi sesuai
  *    porsi tontonanmu), 20% untuk genre "bertetangga", 10% untuk genre baru dan video yang belum
  *    dikenali genrenya. Isi tiap jatah boleh dari channel mana saja; tidak ada batas jumlah per channel.
@@ -107,40 +108,74 @@ object Ranking {
         val kws: Set<String>
     )
 
+    /** Hari sampai kesegaran video separuh: berita cepat basi, cerita/edukasi/musik awet. */
+    private fun halfLifeDays(genre: String): Double = when (genre) {
+        "berita" -> 3.0
+        "olahraga" -> 7.0
+        "teknologi", "game", "bisnis" -> 30.0
+        "?" -> 60.0
+        else -> 180.0
+    }
+
+    /**
+     * Dua tahap seperti sistem rekomendasi besar: (1) kandidat dikumpulkan dari banyak sumber
+     * (channel langganan baru + lama, video terkait tontonan, genre favorit, penjelajahan),
+     * (2) tiap kandidat diberi skor lalu disusun ulang menurut jatah genre.
+     */
     fun rank(
         pool: List<RecEntity>,
         signals: List<SignalEntity>,
         recentChannels: Map<String, Int> = emptyMap(),
         history: List<HistoryEntity> = emptyList(),
+        subscribed: Set<String> = emptySet(),
         now: Long = System.currentTimeMillis()
     ): List<VideoItem> {
         if (pool.isEmpty()) return emptyList()
         val w = HashMap<String, Double>(signals.size * 2)
         for (s in signals) w[s.name] = decayed(s.weight, s.updatedAt, now)
         val day = now / 86_400_000L
+        val profile = genreProfile(history, signals, now)
+        val profileTotal = profile.values.sum()
 
         val scored = pool.map { e ->
             val ck = channelKey(e.channelUrl, e.channel)
             val kws = keywords(e.title)
-            // Bobot channel dibatasi kecil supaya satu channel tidak menenggelamkan yang lain.
-            val chScore = tanh((w[ck] ?: 0.0) / 8.0) * 2.0
+            val genre = e.genre ?: Genres.classify(e.title, e.channel) ?: "?"
+
+            // 1) Kecocokan: channel (tontonan + langganan), genre, dan topik yang kamu sukai.
+            val chScore = tanh((w[ck] ?: 0.0) / 8.0) * 2.0 + (if (ck in subscribed) 0.9 else 0.0)
+            val genreScore = if (profileTotal > 0.0) 1.2 * (profile[genre] ?: 0.0) / profileTotal else 0.0
             val kwVals = kws.map { tanh((w["kw:$it"] ?: 0.0) / 5.0) }
             val kwScore = (kwVals.sortedDescending().take(3).sum() + kwVals.filter { it < 0 }.sum()) * 0.8
-            val ageH = (now - e.savedAt).coerceAtLeast(0L) / 3_600_000.0
-            val fresh = 0.8 * exp(-ageH / 48.0)
+
+            // 2) Kesegaran dari umur video (bukan kapan disimpan); peluruhannya bergantung genre.
+            val ageDays = if (e.published > 0L) {
+                (now - e.published).coerceAtLeast(0L) / 86_400_000.0
+            } else {
+                (now - e.savedAt).coerceAtLeast(0L) / 86_400_000.0 + 3.0
+            }
+            val freshness = 0.9 * 0.5.pow(ageDays / halfLifeDays(genre))
+
+            // 3) Kualitas: video yang banyak ditonton orang lain.
             val pop = if (e.views > 0) log10(e.views.toDouble() + 1.0) / 10.0 else 0.0
             val jitter = (((e.url.hashCode() xor day.toInt()) and 0x7fffffff) % 1000) / 1000.0 * 0.15
-            // Jeda: channel yang baru ditonton diturunkan sedikit.
+
+            // 4) Penalti: sudah sering ditawarkan tapi tidak dibuka, dan channel yang baru ditonton.
+            val fatigue = minOf(2.0, 0.5 * e.shown)
             val cooldown = minOf(1.2, 0.4 * (recentChannels[ck] ?: 0))
-            val genre = e.genre ?: Genres.classify(e.title, e.channel) ?: "?"
-            Scored(e, ck, genre, chScore + kwScore + fresh + pop + jitter - cooldown, kws.toSet())
+
+            Scored(
+                e, ck, genre,
+                chScore + genreScore + kwScore + freshness + pop + jitter - fatigue - cooldown,
+                kws.toSet()
+            )
         }.filter { it.score > -2.5 } // yang jelas tidak disukai disingkirkan
 
         // Kelompokkan per genre; di dalam kelompok, yang paling cocok di depan.
         val buckets = HashMap<String, MutableList<Scored>>()
         for (sc in scored.sortedByDescending { it.score }) buckets.getOrPut(sc.genre) { ArrayList() }.add(sc)
 
-        var targets = genreTargets(genreProfile(history, signals, now), now)
+        var targets = genreTargets(profile, now)
         if (targets.isEmpty()) {
             val ids = buckets.keys.toList()
             targets = ids.associateWith { 1.0 / ids.size }

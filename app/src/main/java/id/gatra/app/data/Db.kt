@@ -1,5 +1,6 @@
 package id.gatra.app.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -45,8 +46,16 @@ data class RecEntity(
     val rank: Int,
     val channelUrl: String? = null,
     val avatar: String? = null,
-    val genre: String? = null
+    val genre: String? = null,
+    /** Waktu terbit video (ms); 0 = tidak diketahui. Dipakai untuk menghitung kesegaran. */
+    @ColumnInfo(defaultValue = "0") val published: Long = 0L,
+    /** Berapa kali video ini sudah ditawarkan di Beranda tetapi tidak dibuka (kejenuhan tayangan). */
+    @ColumnInfo(defaultValue = "0") val shown: Int = 0,
+    /** Asal video, mis. "sub" = dari channel yang diikuti. */
+    val source: String? = null
 )
+
+data class ShownRow(val url: String, val shown: Int)
 
 /** Minat yang dipelajari dari kebiasaanmu: "ch:<channel>" atau "kw:<kata kunci>", dengan bobot yang meluruh seiring waktu. */
 @Entity(tableName = "signals")
@@ -257,6 +266,12 @@ interface RecDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(items: List<RecEntity>)
 
+    @Query("UPDATE recommendations SET shown = shown + 1 WHERE url IN (:urls)")
+    suspend fun markShown(urls: List<String>)
+
+    @Query("SELECT url, shown FROM recommendations WHERE url IN (:urls)")
+    suspend fun shownOf(urls: List<String>): List<ShownRow>
+
     @Query(
         "DELETE FROM recommendations WHERE url NOT IN " +
             "(SELECT url FROM recommendations ORDER BY savedAt DESC, rank ASC LIMIT 250)"
@@ -273,7 +288,7 @@ interface RecDao {
         WatchLaterEntity::class, PlaylistEntity::class, PlaylistItemEntity::class, DownloadEntity::class,
         SignalEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class GatraDb : RoomDatabase() {
@@ -335,5 +350,14 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
 val MIGRATION_4_5 = object : Migration(4, 5) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE recommendations ADD COLUMN genre TEXT")
+    }
+}
+
+/** Versi 6: rekomendasi menyimpan waktu terbit, jumlah tayangan, dan asal video. Data lama tidak dihapus. */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE recommendations ADD COLUMN published INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE recommendations ADD COLUMN shown INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE recommendations ADD COLUMN source TEXT")
     }
 }

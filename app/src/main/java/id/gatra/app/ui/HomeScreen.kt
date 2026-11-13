@@ -192,7 +192,18 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             catCursors.clear()
             homeHasMore = true
             catHasMore = true
-            if (index == 0) loadHome(force = true) else loadCategory(index)
+            if (index == 0) {
+                // Yang sudah ditawarkan tapi tidak dibuka sedikit diturunkan di putaran berikutnya.
+                try {
+                    repo.markShown(recs.value.take(20).map { it.url })
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+                loadHome(force = true)
+            } else {
+                loadCategory(index)
+            }
             refreshing = false
             loading = false
         }
@@ -226,8 +237,19 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 emptyList()
             }
+            // Putuskan dulu apakah perlu mencari kandidat baru (sebelum video langganan masuk ke kumpulan kandidat).
+            val needRefresh = force || recs.value.isEmpty()
             var fresh = 0
-            if (force || recs.value.isEmpty()) fresh = repo.refreshRecommendations()
+            if (needRefresh) fresh = repo.refreshRecommendations()
+            // Video baru dari langganan ikut dinilai bersama kandidat lain (tidak lagi dipaksa di paling atas).
+            if (feed.isNotEmpty()) {
+                try {
+                    repo.addSubscriptionVideos(feed)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
+            }
             if (feed.isEmpty() && fresh == 0 && recs.value.isEmpty()) {
                 error = "Belum ada video yang bisa dimuat. Periksa internet lalu coba lagi."
             }
@@ -339,7 +361,7 @@ fun HomeScreen(
                 item { CategoryChips(vm.labels, vm.selected, vm::select) }
 
                 if (vm.selected == 0) {
-                    val feedTop = vm.feed.filter { keep(it) }.take(8)
+                    val feedTop = emptyList<VideoItem>()
                     val feedUrls = feedTop.map { it.url }.toSet()
                     val recList = recs.filter { keep(it) && it.url !in feedUrls }
 

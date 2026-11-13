@@ -51,7 +51,10 @@ Pemutar YouTube tanpa iklan, tanpa login, untuk Android. Tampilan gelap dengan a
 4. Setelah centang hijau (sekitar 5 sampai 10 menit pertama), buka run-nya, turun ke **Artifacts**, unduh **Gatra-APK**, ekstrak, lalu pasang `Gatra.apk`.
 5. Update berikutnya: ubah kode, push lagi, unduh APK baru, pasang di atas yang lama (tanda tangan sama, data tetap aman).
 
-## Rekomendasi "Untukmu" (jatah genre)
+## Cara kerja rekomendasi "Untukmu"
+Dua tahap seperti sistem rekomendasi besar. Tahap 1 mengumpulkan kandidat dari banyak sumber: video baru dan video lama yang bagus dari channel langganan (bergilir tiap hari), video terkait tontonan, genre favorit, dan penjelajahan. Tahap 2 memberi skor: kecocokan (channel, langganan, genre, topik), kesegaran dari umur video (berita cepat basi, cerita/edukasi/musik awet), popularitas, lalu menurunkan video yang berulang kali ditawarkan tapi tidak dibuka dan channel yang baru ditonton. Setelah itu disusun menurut jatah genre. Video baru dari langganan tidak lagi dipaksa di paling atas Beranda; semuanya tetap ada di tab Langganan.
+
+## Jatah genre
 Beranda dibagi per genre: 70% genre yang paling sering kamu tonton (sesuai porsinya), 20% genre bertetangga, 10% genre baru. Tidak ada batas jumlah per channel; isi tiap jatah boleh dari channel mana saja. Hanya "Untukmu" yang memakai ini. Langganan, kategori, pencarian, dan halaman channel tidak berubah. Angka 70/20/10 ada di `Ranking.kt` (`SHARE_FAVORITE`, `SHARE_NEIGHBOR`, `SHARE_NEW`), daftar genre dan kata-katanya di `Genres.kt`.
 
 ## Versi PC (Windows)

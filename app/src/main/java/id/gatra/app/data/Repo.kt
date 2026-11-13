@@ -94,6 +94,9 @@ class VideoCursor(private val repo: Repo, val query: String) {
     }
 }
 
+/** Satu kandidat rekomendasi: video + genre (dari kueri) + asal. */
+private class PoolItem(val v: VideoItem, val genre: String?, val source: String?)
+
 private inline fun <T> safe(default: T, block: () -> T): T =
     try {
         block()
@@ -114,12 +117,13 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
 
     /** Rekomendasi Beranda, diurutkan oleh algoritma lokal [Ranking] (otomatis menyusun ulang saat minatmu berubah). */
     val recommendations: Flow<List<VideoItem>> =
-        combine(db.recs().pool(), db.signals().allFlow(), db.history().all()) { pool, sigs, hist ->
+        combine(db.recs().pool(), db.signals().allFlow(), db.history().all(), db.subs().all()) { pool, sigs, hist, subs ->
             val since = System.currentTimeMillis() - 48L * 3_600_000L
             val recent = hist.filter { it.watchedAt >= since }
                 .groupingBy { Ranking.channelKey(it.channelUrl, it.channel) }
                 .eachCount()
-            Ranking.rank(pool, sigs, recent, hist)
+            val subKeys = subs.map { Ranking.channelKey(it.url, it.name) }.toSet()
+            Ranking.rank(pool, sigs, recent, hist, subKeys)
         }.flowOn(Dispatchers.Default)
 
     private val bg = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -339,29 +343,69 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
      */
     suspend fun refreshRecommendations(): Int = withContext(Dispatchers.IO) {
         val plan = buildPlan()
-        val results = coroutineScope {
-            plan.map { (genre, q) ->
+        val subs = db.subs().snapshot()
+        val day = (System.currentTimeMillis() / 86_400_000L).toInt()
+        // Video lama yang bagus dari channel langganan, bergilir tiap hari: pencarian nama channel
+        // mengurutkan menurut relevansi, jadi hasilnya bukan hanya yang paling baru.
+        val rediscover = if (subs.isEmpty()) {
+            emptyList()
+        } else {
+            val sorted = subs.sortedBy { it.name.lowercase() }
+            (0 until minOf(3, sorted.size)).map { sorted[(day * 3 + it).mod(sorted.size)] }
+        }
+        val (results, older) = coroutineScope {
+            val byPlan = plan.map { (genre, q) ->
                 async { genre to safe(emptyList<VideoItem>()) { search(q, false).videos.take(10) } }
-            }.awaitAll()
+            }
+            val bySub = rediscover.map { s ->
+                async {
+                    safe(emptyList<VideoItem>()) {
+                        val key = Ranking.channelKey(s.url, s.name)
+                        search(s.name, false).videos
+                            .filter { Ranking.channelKey(it.channelUrl, it.channel) == key }
+                            .take(8)
+                    }
+                }
+            }
+            byPlan.awaitAll() to bySub.awaitAll()
         }
         // Setiap video membawa genre dari kueri yang menemukannya (kueri tanpa genre: ditebak dari judul).
-        val labeled = results.map { (genre, videos) -> videos.map { it to genre } }
-        val merged = interleave(labeled).distinctBy { it.first.url }.take(70)
-        if (merged.isNotEmpty()) {
-            val now = System.currentTimeMillis()
-            db.recs().insertAll(
-                merged.mapIndexed { i, (v, genre) ->
-                    RecEntity(
-                        url = v.url, title = v.title, channel = v.channel, thumbnail = v.thumb,
-                        duration = v.durationSec, views = v.views, savedAt = now, rank = i,
-                        channelUrl = v.channelUrl, avatar = v.avatar,
-                        genre = genre ?: Genres.classify(v.title, v.channel)
-                    )
-                }
-            )
-            db.recs().prune()
-        }
+        val labeled = results.map { (genre, videos) -> videos.map { PoolItem(it, genre, null) } }
+        val olderItems = older.flatten().map { PoolItem(it, null, "sub") }
+        val merged = (interleave(labeled) + olderItems).distinctBy { it.v.url }.take(90)
+        upsertPool(merged)
         merged.size
+    }
+
+    /** Masukkan video terbaru dari channel langganan ke kumpulan kandidat, supaya dinilai bersama yang lain. */
+    suspend fun addSubscriptionVideos(videos: List<VideoItem>) = withContext(Dispatchers.IO) {
+        upsertPool(videos.take(80).map { PoolItem(it, null, "sub") })
+    }
+
+    /** Tandai video yang sudah ditawarkan di Beranda; yang berulang kali tidak dibuka diturunkan peringkatnya. */
+    suspend fun markShown(urls: List<String>) = withContext(Dispatchers.IO) {
+        if (urls.isNotEmpty()) db.recs().markShown(urls.take(40))
+    }
+
+    private suspend fun upsertPool(items: List<PoolItem>) {
+        if (items.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val shown = db.recs().shownOf(items.map { it.v.url }).associate { it.url to it.shown }
+        db.recs().insertAll(
+            items.mapIndexed { i, item ->
+                val v = item.v
+                RecEntity(
+                    url = v.url, title = v.title, channel = v.channel, thumbnail = v.thumb,
+                    duration = v.durationSec, views = v.views, savedAt = now, rank = i,
+                    channelUrl = v.channelUrl, avatar = v.avatar,
+                    genre = item.genre ?: Genres.classify(v.title, v.channel),
+                    published = if (v.publishedMs > 0L) v.publishedMs else parsePublishedMs(v.date, now),
+                    shown = shown[v.url] ?: 0,
+                    source = item.source
+                )
+            }
+        )
+        db.recs().prune()
     }
 
     // ---------- Pencarian ----------
@@ -520,26 +564,29 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         }
     }
 
-    /** Perkiraan waktu terbit dari teks seperti "3 hari yang lalu" / "3 days ago"; bila gagal, urut berdasarkan posisi. */
-    private fun approxPublishedMs(raw: String?, now: Long, index: Int): Long {
+    /** Waktu terbit dari teks seperti "3 hari yang lalu" / "3 days ago"; 0 bila teksnya tidak dikenali. */
+    private fun parsePublishedMs(raw: String?, now: Long): Long {
         val m = Regex(
             """(\d+)\s*(detik|menit|jam|hari|minggu|bulan|tahun|second|sec|minute|min|hour|hr|day|week|wk|month|mo|year|yr)""",
             RegexOption.IGNORE_CASE
-        ).find(raw.orEmpty())
-        if (m != null) {
-            val n = m.groupValues[1].toLongOrNull() ?: 0L
-            val unitMs = when (m.groupValues[2].lowercase()) {
-                "detik", "second", "sec" -> 1_000L
-                "menit", "minute", "min" -> 60_000L
-                "jam", "hour", "hr" -> 3_600_000L
-                "hari", "day" -> 86_400_000L
-                "minggu", "week", "wk" -> 7 * 86_400_000L
-                "bulan", "month", "mo" -> 30 * 86_400_000L
-                else -> 365 * 86_400_000L
-            }
-            return (now - n * unitMs).coerceAtLeast(1L)
+        ).find(raw.orEmpty()) ?: return 0L
+        val n = m.groupValues[1].toLongOrNull() ?: 0L
+        val unitMs = when (m.groupValues[2].lowercase()) {
+            "detik", "second", "sec" -> 1_000L
+            "menit", "minute", "min" -> 60_000L
+            "jam", "hour", "hr" -> 3_600_000L
+            "hari", "day" -> 86_400_000L
+            "minggu", "week", "wk" -> 7 * 86_400_000L
+            "bulan", "month", "mo" -> 30 * 86_400_000L
+            else -> 365 * 86_400_000L
         }
-        return (now - index * 6L * 3_600_000L).coerceAtLeast(1L)
+        return (now - n * unitMs).coerceAtLeast(1L)
+    }
+
+    /** Perkiraan waktu terbit; bila teksnya tidak dikenali, urut berdasarkan posisi di halaman channel. */
+    private fun approxPublishedMs(raw: String?, now: Long, index: Int): Long {
+        val parsed = parsePublishedMs(raw, now)
+        return if (parsed > 0L) parsed else (now - index * 6L * 3_600_000L).coerceAtLeast(1L)
     }
 
     /** Dipakai saat belum ada riwayat dan langganan: campuran beberapa topik populer. */
