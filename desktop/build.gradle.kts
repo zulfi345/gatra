@@ -14,7 +14,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.27.1")
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
     implementation("uk.co.caprica:vlcj:4.8.3")
 }
 
