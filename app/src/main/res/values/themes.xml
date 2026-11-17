@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Gatra" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/gatra_bg</item>
+        <item name="android:statusBarColor">@color/gatra_bg</item>
+        <item name="android:navigationBarColor">@color/gatra_bg</item>
+        <item name="android:colorBackground">@color/gatra_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
