@@ -12,7 +12,7 @@ android {
         applicationId = "id.gatra.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
+        versionCode = 2
         versionName = "1.0.0"
     }
 
@@ -101,5 +101,5 @@ dependencies {
     implementation("com.google.guava:guava:33.2.1-android")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.27.1")
 }
