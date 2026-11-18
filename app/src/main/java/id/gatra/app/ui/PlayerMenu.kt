@@ -41,7 +41,11 @@ private fun speedLabel(s: Float): String =
  */
 @Composable
 fun QualityMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier) {
-    if (st.qualities.size <= 1 || st.isLive) return
+    if (st.isLive) {
+        LiveQualityMenu(st, playback, modifier)
+        return
+    }
+    if (st.qualities.size <= 1) return
     var open by remember { mutableStateOf(false) }
 
     Box(modifier) {
@@ -159,6 +163,38 @@ fun PlayerSettingsMenu(
                     Item("Waktu tidur: $sleepLabel") { page = 4 }
                     if (st.hasPrevious) Item("Putar video sebelumnya") { onDismiss(); playback.playPrevious() }
                     Item("Putar video berikutnya") { onDismiss(); playback.skipNext() }
+                }
+            }
+        }
+    }
+}
+
+/** Siaran langsung: pilih resolusi maksimal (Otomatis, 1080p, 720p, 480p, ...). */
+@Composable
+private fun LiveQualityMenu(st: PlayerState, playback: PlaybackController, modifier: Modifier) {
+    var open by remember { mutableStateOf(false) }
+    val heights = st.liveHeights.ifEmpty { listOf(1080, 720, 480, 360, 240, 144) }
+    Box(modifier) {
+        val label = if (st.liveCap > 0) "${st.liveCap}p" else "Auto"
+        Text(
+            label,
+            color = Color.White,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .background(Color(0x66000000), RoundedCornerShape(50))
+                .clickable { open = true }
+                .padding(horizontal = 14.dp, vertical = 9.dp)
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Item("Otomatis (tertinggi yang lancar)", st.liveCap == 0) {
+                open = false
+                playback.setLiveQuality(0)
+            }
+            heights.forEach { h ->
+                Item("Maksimal ${h}p", st.liveCap == h) {
+                    open = false
+                    playback.setLiveQuality(h)
                 }
             }
         }

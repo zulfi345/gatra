@@ -63,6 +63,9 @@ Beranda dibagi per genre: 70% genre yang paling sering kamu tonton (sesuai porsi
 ## Unduhan dan pengaturan
 Dialog unduh menampilkan resolusi beserta perkiraan ukuran dan pilihan bahasa audio (dubbing) bila videonya punya beberapa trek; unduhan memakai trek yang dipilih. Kecepatan putar, subtitle, dan bahasa audio utama disimpan dan tidak kembali ke awal saat video berganti atau aplikasi ditutup. Memilih trek asli di pemutar berarti "selalu audio asli", bukan mengunci bahasa asli video itu.
 
+## Siaran langsung
+Siaran langsung yang sedang berjalan ikut dicari untuk rekomendasi (genre favorit + satu pencarian umum); sampai 3 yang terbaik dijamin muncul di bagian atas Beranda, dan dianggap berakhir bila tidak ditemukan lagi dalam 30 menit. Di tab Langganan, siaran langsung channel yang kamu ikuti tampil paling atas (dicek lewat tab Live channel, disimpan 3 menit). Di pemutar, tombol kualitas di pojok kanan atas saat live memilih resolusi maksimal (Otomatis, 1080p, ... 144p); bawaannya 480p supaya tidak buffering dan pilihanmu diingat untuk siaran berikutnya.
+
 ## Memperbarui bila YouTube berubah
 Di Termux, dari folder Gatra: `bash perbarui.sh`. Skrip ini mengecek versi NewPipeExtractor terbaru, menggantinya (HP dan PC), menaikkan versionCode, push ke GitHub, memantau build, lalu menyimpan APK ke folder Download. Kalau build gagal, baris error disimpan di `~/log.txt` dan ditampilkan. `bash perbarui.sh paksa` = bangun ulang walau versinya sama.
 

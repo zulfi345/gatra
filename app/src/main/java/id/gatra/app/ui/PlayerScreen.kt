@@ -333,9 +333,9 @@ fun PlayerScreen(
 internal fun plainDescription(d: Description?): String {
     if (d == null) return ""
     val raw = d.content ?: return ""
-    return if (d.type == Description.HTML) {
-        HtmlCompat.fromHtml(raw, HtmlCompat.FROM_HTML_MODE_LEGACY).toString().trim()
-    } else raw.trim()
+    // Deskripsi video YouTube berupa HTML. Tidak memeriksa jenisnya lewat konstanta extractor, karena
+    // namanya berubah di versi baru dan itu membuat build gagal ("Unresolved reference: HTML").
+    return HtmlCompat.fromHtml(raw, HtmlCompat.FROM_HTML_MODE_LEGACY).toString().trim()
 }
 
 @Composable

@@ -78,6 +78,11 @@ class AppSettings(context: Context) {
         get() = prefs.getFloat("speed", 1f)
         set(v) { prefs.edit().putFloat("speed", v).commit() }
 
+    /** Resolusi maksimal untuk siaran langsung (0 = otomatis, tertinggi yang lancar). Bawaan 480p supaya tidak buffering. */
+    var liveMaxHeight: Int
+        get() = prefs.getInt("live_max_height", 480)
+        set(v) { prefs.edit().putInt("live_max_height", v).commit() }
+
     /** Bahasa subtitle terakhir yang kamu pilih (kosong = subtitle mati). */
     var subtitleLang: String
         get() = prefs.getString("sub_lang", "") ?: ""

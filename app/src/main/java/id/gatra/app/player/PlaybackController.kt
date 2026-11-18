@@ -12,6 +12,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.FileDataSource
@@ -107,7 +108,10 @@ data class PlayerState(
     val offlineTitle: String? = null,
     val hasPrevious: Boolean = false,
     val audioTracks: List<AudioTrackOption> = emptyList(),
-    val audioTrackSel: String? = null
+    val audioTrackSel: String? = null,
+    /** Siaran langsung: daftar resolusi yang tersedia dan batas yang dipilih (0 = otomatis). */
+    val liveHeights: List<Int> = emptyList(),
+    val liveCap: Int = 0
 )
 
 // ---------- Fungsi bantu tingkat atas (dipakai juga oleh pengunduh) ----------
@@ -354,6 +358,19 @@ class PlaybackController(
                     player.playWhenReady && gateJob?.isActive != true && !_state.value.isLive
                 ) {
                     startGate(REBUFFER_TARGET_MS, REBUFFER_MAX_WAIT_MS)
+                }
+            }
+
+            override fun onTracksChanged(tracks: Tracks) {
+                if (!_state.value.isLive) return
+                val heights = tracks.groups
+                    .filter { it.type == C.TRACK_TYPE_VIDEO }
+                    .flatMap { g -> (0 until g.length).map { g.getTrackFormat(it).height } }
+                    .filter { it > 0 }
+                    .distinct()
+                    .sortedDescending()
+                if (heights.isNotEmpty() && heights != _state.value.liveHeights) {
+                    _state.update { it.copy(liveHeights = heights) }
                 }
             }
 
@@ -657,6 +674,22 @@ class PlaybackController(
         return true
     }
 
+    /** Batasi resolusi video tertinggi yang boleh dipilih pemutar (0 = tanpa batas). Dipakai untuk siaran langsung. */
+    private fun applyVideoCap(maxHeight: Int) {
+        val b = player.trackSelectionParameters.buildUpon()
+        if (maxHeight > 0) b.setMaxVideoSize(Int.MAX_VALUE, maxHeight) else b.setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
+        player.trackSelectionParameters = b.build()
+    }
+
+    /** Pilih resolusi maksimal siaran langsung; 0 = otomatis (tertinggi yang lancar). Disimpan untuk siaran berikutnya. */
+    fun setLiveQuality(height: Int) {
+        if (!_state.value.isLive) return
+        settings.liveMaxHeight = height
+        applyVideoCap(height)
+        _state.update { it.copy(liveCap = height) }
+        notice(if (height > 0) "Siaran langsung maksimal ${height}p" else "Siaran langsung: otomatis")
+    }
+
     private fun applySubtitle(lang: String?) {
         val b = player.trackSelectionParameters.buildUpon()
         if (lang == null) {
@@ -689,6 +722,7 @@ class PlaybackController(
         player.clearMediaItems()
         // Kecepatan dan subtitle pilihanmu tetap dipakai di video berikutnya.
         player.setPlaybackSpeed(settings.playbackSpeed)
+        applyVideoCap(0)
         applySubtitle(settings.subtitleLang.ifBlank { null })
         segments = emptyList()
         subOptions = emptyList()
@@ -729,10 +763,14 @@ class PlaybackController(
                 val prefLang = settings.preferredAudioLang
                 audioTrackId = if (tracks.isEmpty() || prefLang.isBlank()) null
                 else tracks.firstOrNull { it.lang == prefLang }?.id
+                // Siaran langsung: batasi resolusi (bawaan 480p) supaya tidak buffering; bisa diubah dari tombol kualitas.
+                applyVideoCap(if (live) settings.liveMaxHeight else 0)
                 prepare(info, chosen, startMs)
                 _state.update {
                     it.copy(
                         loading = false,
+                        liveCap = if (live) settings.liveMaxHeight else 0,
+                        liveHeights = emptyList(),
                         error = null,
                         url = info.url ?: url,
                         info = info,

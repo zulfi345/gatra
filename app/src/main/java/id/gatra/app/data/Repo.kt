@@ -31,6 +31,7 @@ import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import org.schabi.newpipe.extractor.stream.StreamType
 import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
 import java.time.OffsetDateTime
@@ -244,7 +245,8 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                         thumbnail = r.thumbnails.bestUrl(), duration = r.duration,
                         views = r.viewCount, savedAt = now, rank = i,
                         channelUrl = r.uploaderUrl, avatar = r.uploaderAvatars?.bestUrl(),
-                        genre = Genres.classify(r.name ?: "", r.uploaderName ?: "")
+                        genre = Genres.classify(r.name ?: "", r.uploaderName ?: ""),
+                        source = if (r.streamType == StreamType.LIVE_STREAM) "live" else null
                     )
                 }
             )
@@ -331,7 +333,15 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
             .sortedByDescending { it.second }.take(2)
             .joinToString(" ") { it.first.name.removePrefix("kw:") }
         if (topKeywords.isNotBlank()) plan += null to topKeywords
-        return plan.distinctBy { it.second }.take(9)
+        val base = plan.distinctBy { it.second }.take(8)
+        // Siaran langsung: untuk genre favorit dan satu kueri umum.
+        val liveQueries = ArrayList<Pair<String?, String>>()
+        targets.entries.sortedByDescending { it.value }
+            .mapNotNull { Genres.byId(it.key) }
+            .take(2)
+            .forEach { liveQueries += it.id to "live streaming ${it.label.lowercase()}" }
+        liveQueries += null to "live streaming sekarang"
+        return (base + liveQueries).distinctBy { it.second }
     }
 
     /** Dipakai gulir tanpa batas di Beranda: kueri dari rencana yang sama. */
@@ -401,7 +411,7 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
                     genre = item.genre ?: Genres.classify(v.title, v.channel),
                     published = if (v.publishedMs > 0L) v.publishedMs else parsePublishedMs(v.date, now),
                     shown = shown[v.url] ?: 0,
-                    source = item.source
+                    source = if (v.live) "live" else item.source
                 )
             }
         )
@@ -548,7 +558,33 @@ class Repo(private val db: GatraDb, private val http: OkHttpClient) {
         var r = safe<List<VideoItem>>(emptyList()) { fetchRss(sub) }
         if (r.isEmpty()) r = safe<List<VideoItem>>(emptyList()) { fetchRss(sub) }
         if (r.isEmpty()) r = safe<List<VideoItem>>(emptyList()) { fetchViaExtractor(sub) }
-        return r
+        // Siaran langsung yang sedang berjalan di channel ini tampil paling atas.
+        val live = safe<List<VideoItem>>(emptyList()) { fetchLiveNow(sub) }
+        return if (live.isEmpty()) r else live + r.filter { v -> live.none { it.url == v.url } }
+    }
+
+    private val liveCache = HashMap<String, Pair<Long, List<VideoItem>>>()
+
+    /** Siaran langsung yang sedang berjalan di channel (dari tab "Live"), disimpan 3 menit supaya hemat permintaan. */
+    private fun fetchLiveNow(sub: SubscriptionEntity): List<VideoItem> {
+        val now = System.currentTimeMillis()
+        synchronized(liveCache) {
+            liveCache[sub.url]?.let { if (now - it.first < 3 * 60_000L) return it.second }
+        }
+        val info = ChannelInfo.getInfo(yt, sub.url)
+        val tab = info.tabs.firstOrNull { it.contentFilters.contains("livestreams") }
+        val avatar = sub.avatar ?: info.avatars?.bestUrl()
+        val lives = if (tab == null) {
+            emptyList()
+        } else {
+            ChannelTabInfo.getInfo(yt, tab).relatedItems
+                .filterIsInstance<StreamInfoItem>()
+                .filter { it.streamType == StreamType.LIVE_STREAM }
+                .take(3)
+                .map { it.toVideo(sub.name, sub.url, avatar).copy(live = true, publishedMs = now) }
+        }
+        synchronized(liveCache) { liveCache[sub.url] = now to lives }
+        return lives
     }
 
     private fun fetchViaExtractor(sub: SubscriptionEntity): List<VideoItem> {

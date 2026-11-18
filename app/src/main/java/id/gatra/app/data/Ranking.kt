@@ -137,7 +137,11 @@ object Ranking {
         val profile = genreProfile(history, signals, now)
         val profileTotal = profile.values.sum()
 
-        val scored = pool.map { e ->
+        val liveWindowMs = 30 * 60_000L
+        val scored = pool.mapNotNull { e ->
+            val isLive = e.source == "live"
+            // Siaran langsung hanya berlaku sebentar; yang sudah lama tidak ditemukan lagi dianggap sudah berakhir.
+            if (isLive && now - e.savedAt > liveWindowMs) return@mapNotNull null
             val ck = channelKey(e.channelUrl, e.channel)
             val kws = keywords(e.title)
             val genre = e.genre ?: Genres.classify(e.title, e.channel) ?: "?"
@@ -149,7 +153,9 @@ object Ranking {
             val kwScore = (kwVals.sortedDescending().take(3).sum() + kwVals.filter { it < 0 }.sum()) * 0.8
 
             // 2) Kesegaran dari umur video (bukan kapan disimpan); peluruhannya bergantung genre.
-            val ageDays = if (e.published > 0L) {
+            val ageDays = if (isLive) {
+                0.0
+            } else if (e.published > 0L) {
                 (now - e.published).coerceAtLeast(0L) / 86_400_000.0
             } else {
                 (now - e.savedAt).coerceAtLeast(0L) / 86_400_000.0 + 3.0
@@ -161,12 +167,13 @@ object Ranking {
             val jitter = (((e.url.hashCode() xor day.toInt()) and 0x7fffffff) % 1000) / 1000.0 * 0.15
 
             // 4) Penalti: sudah sering ditawarkan tapi tidak dibuka, dan channel yang baru ditonton.
+            val liveBoost = if (isLive) 0.7 else 0.0
             val fatigue = minOf(2.0, 0.5 * e.shown)
             val cooldown = minOf(1.2, 0.4 * (recentChannels[ck] ?: 0))
 
             Scored(
                 e, ck, genre,
-                chScore + genreScore + kwScore + freshness + pop + jitter - fatigue - cooldown,
+                chScore + genreScore + kwScore + freshness + liveBoost + pop + jitter - fatigue - cooldown,
                 kws.toSet()
             )
         }.filter { it.score > -2.5 } // yang jelas tidak disukai disingkirkan
@@ -210,12 +217,25 @@ object Ranking {
             picked[genre] = (picked[genre] ?: 0) + 1
             perChannel[chosen.channel] = (perChannel[chosen.channel] ?: 0) + 1
         }
+        // Siaran langsung terbaik dijamin muncul di bagian atas (maksimal 3), karena sifatnya "sedang terjadi".
+        val liveInTop = result.take(12).count { it.e.source == "live" }
+        if (liveInTop < 3) {
+            val already = result.map { it.e.url }.toHashSet()
+            val extra = scored.filter { it.e.source == "live" && it.e.url !in already }
+                .sortedByDescending { it.score }
+                .take(3 - liveInTop)
+            var pos = 2
+            for (c in extra) {
+                result.add(minOf(pos, result.size), c)
+                pos += 4
+            }
+        }
         return result.map {
             val e = it.e
             VideoItem(
                 url = e.url, title = e.title, channel = e.channel, channelUrl = e.channelUrl,
                 thumb = e.thumbnail, durationSec = e.duration, views = e.views, date = null,
-                avatar = e.avatar
+                live = e.source == "live", avatar = e.avatar
             )
         }
     }
